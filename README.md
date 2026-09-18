@@ -1,4 +1,4 @@
-﻿# 🎓 Zajel Telegram Bot (جامعة النجاح الوطنية)
+# 🎓 Zajel Telegram Bot (جامعة النجاح الوطنية)
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![Telegram Bot API](https://img.shields.io/badge/Telegram%20Bot%20API-python--telegram--bot-blue.svg)](https://python-telegram-bot.org/)
