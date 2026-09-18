@@ -495,6 +495,82 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_USER_ID:
+        return
+
+    users = db.get_all_users()
+    if not users:
+        await update.message.reply_text("لا يوجد طلاب مسجلون حالياً.")
+        return
+
+    lines = [f"قائمة الطلاب المسجلين ({len(users)} طالب):\n"]
+    for idx, u in enumerate(users, 1):
+        reg_date = u["created_at"][:10] if u["created_at"] else "غير معروف"
+        lines.append(f"{idx}. {u['student_name']} (رقم: {u['username']})")
+        lines.append(f"   المعرف: {u['telegram_id']} | تاريخ التسجيل: {reg_date}\n")
+
+    text = "\n".join(lines).strip()
+    for chunk in formatter.split_message(text):
+        await update.message.reply_text(chunk)
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_USER_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "يرجى كتابة نص الرسالة بعد الأمر.\n"
+            "مثال:\n"
+            "/broadcast تنبيه: تم الإعلان عن جدول الامتحانات النصفية"
+        )
+        return
+
+    broadcast_text = " ".join(context.args).strip()
+    all_ids = db.get_all_telegram_ids()
+
+    if not all_ids:
+        await update.message.reply_text("لا يوجد مستخدمون لإرسال الإشعار إليهم.")
+        return
+
+    status_msg = await update.message.reply_text(f"جاري إرسال الإشعار إلى {len(all_ids)} طالب...")
+
+    success_count = 0
+    fail_count = 0
+    announcement_msg = f"إشعار عام من إدارة البوت:\n\n{broadcast_text}"
+
+    for tid in all_ids:
+        try:
+            await context.bot.send_message(chat_id=tid, text=announcement_msg)
+            success_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to send broadcast to {tid}: {e}")
+            fail_count += 1
+
+    await status_msg.edit_text(
+        f"تقرير الإرسال الجماعي:\n\n"
+        f"- إجمالي المستلمين: {len(all_ids)}\n"
+        f"- تم التسليم بنجاح: {success_count}\n"
+        f"- فشل الإرسال (حظر أو خطأ): {fail_count}"
+    )
+
+
+async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_USER_ID:
+        return
+
+    count = len(user_sessions)
+    user_sessions.clear()
+    await update.message.reply_text(
+        f"تم تفريغ الذاكرة المؤقتة بنجاح ({count} جلسات).\n"
+        "سيتم جلب كافة البيانات مباشرة من خادم زاجل في الطلبات القادمة."
+    )
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global unhandled error handler"""
     logger.error(f"Exception while handling an update: {context.error}\n{traceback.format_exc()}")
@@ -506,7 +582,19 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     text = formatter.format_help()
+    if user_id == ADMIN_USER_ID:
+        admin_tools = (
+            "\n\nأوامر المشرف الخاصة:\n"
+            "/status - تقرير حالة الخادم وعدد الطلاب\n"
+            "/users - قائمة الطلاب المسجلين في البوت\n"
+            "/broadcast <رسالة> - إرسال إشعار جماعي لكافة الطلاب\n"
+            "/clear_cache - تفريغ الذاكرة المؤقتة بالكامل\n"
+            "/logs - عرض آخر الأخطاء المسجلة\n"
+            "/logfile - تحميل ملف السجل كملف مستند"
+        )
+        text += admin_tools
     await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
 
 
@@ -568,6 +656,9 @@ def main():
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("logfile", logfile_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("clear_cache", clear_cache_command))
 
     # Global Error handler
     app.add_error_handler(error_handler)

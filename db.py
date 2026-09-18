@@ -90,3 +90,31 @@ def update_student_name(telegram_id: int, name: str):
 
 # Initialize on import
 init_db()
+
+def get_all_users() -> list:
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id, username, student_name, created_at, last_active FROM users ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        result.append({
+            "telegram_id": r[0],
+            "username": r[1],
+            "student_name": r[2] or "غير محدد",
+            "created_at": r[3],
+            "last_active": r[4]
+        })
+    return result
+
+
+def get_all_telegram_ids() -> list:
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT telegram_id FROM users")
+    rows = cursor.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
