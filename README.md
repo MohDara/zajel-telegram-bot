@@ -1,4 +1,4 @@
-﻿# 🎓 Zajel Telegram Bot (جامعة النجاح الوطنية)
+# 🎓 Zajel Telegram Bot (جامعة النجاح الوطنية)
 
 بوت تيليجرام شخصي للوصول المباشر والسريع إلى بوابة زاجل الأكاديمية (An-Najah National University) دون الحاجة لتسجيل الدخول في كل مرة.
 
@@ -28,9 +28,9 @@
 ### 2. إضافة التوكن في ملف الإعدادات `.env`
 افتح ملف `.env` في هذا المجلد وضع التوكن الخاص بك:
 ```ini
-ZAJEL_USER=12000000
+ZAJEL_USER=YOUR_STUDENT_ID
 ZAJEL_PASS=YOUR_PASSWORD
-TELEGRAM_BOT_TOKEN=ضع_التوكن_هنا
+TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN_HERE
 ALLOWED_USER_ID=
 ```
 
