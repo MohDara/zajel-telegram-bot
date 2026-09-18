@@ -272,8 +272,8 @@ async def check_user_logged_in(update: Update) -> bool:
     user_id = update.effective_user.id
     if not db.get_user(user_id):
         await update.message.reply_text(
-            "أنت لست مسجلاً في البوت حالياً.\n"
-            "يرجى إرسال /start لتسجيل الدخول بحساب زاجل.",
+            "أهلاً بك! تم ترقية نظام البوت إلى خوادم وقواعد بيانات سحابية دائمة.\n\n"
+            "يرجى الضغط على /start لتسجيل الدخول لمرة واحدة بحساب زاجل، وسيظل حسابك محفوظاً بشكل دائم.",
             reply_markup=ReplyKeyboardRemove()
         )
         return False
