@@ -7,14 +7,10 @@ from dotenv import load_dotenv, set_key
 load_dotenv()
 
 # Key management: Read or generate Fernet key
-KEY_ENV = os.getenv("APP_SECRET_KEY")
+DEFAULT_FALLBACK_KEY = "<redacted_key>"
+KEY_ENV = os.getenv("APP_SECRET_KEY", DEFAULT_FALLBACK_KEY).strip()
 if not KEY_ENV:
-    generated_key = Fernet.generate_key().decode()
-    try:
-        set_key(".env", "APP_SECRET_KEY", generated_key)
-    except Exception:
-        pass
-    KEY_ENV = generated_key
+    KEY_ENV = DEFAULT_FALLBACK_KEY
 
 fernet = Fernet(KEY_ENV.encode() if isinstance(KEY_ENV, str) else KEY_ENV)
 DB_PATH = "zajel_users.db"
