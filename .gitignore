@@ -1,7 +1,15 @@
-﻿# Secrets & sensitive data
+# Secrets & sensitive data
 .env
+.app_secret.key
+*.key
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
+*.bak
+
+# Backups
+backups/
 
 # Logs
 *.log

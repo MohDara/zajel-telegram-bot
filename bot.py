@@ -1,3 +1,6 @@
+import asyncio
+import io
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -24,6 +27,7 @@ from telegram import (
     InlineKeyboardButton,
 )
 from telegram.constants import ChatAction
+from telegram.error import RetryAfter
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -68,6 +72,37 @@ def start_health_check_server():
     except Exception as e:
         logger.warning(f"Could not start health check server on port {port_str}: {e}")
 
+
+async def periodic_backup_loop():
+    """Continuously creates verified database snapshots so data can always be restored."""
+    while True:
+        await asyncio.sleep(BACKUP_INTERVAL)
+        try:
+            path = await asyncio.to_thread(db.backup_sqlite_db)
+            if path:
+                logger.info(f"Periodic verified backup created: {path}")
+        except Exception as e:
+            logger.error(f"Periodic backup failed: {e}")
+        try:
+            prune_user_sessions()
+        except Exception:
+            pass
+
+
+async def post_init(application):
+    start_health_check_server()
+    application.create_task(periodic_backup_loop())
+
+
+async def post_shutdown(application):
+    """Final safety snapshot on graceful shutdown/rolling deploy."""
+    try:
+        path = await asyncio.to_thread(db.backup_sqlite_db)
+        if path:
+            logger.info(f"Shutdown backup created: {path}")
+    except Exception as e:
+        logger.error(f"Shutdown backup failed: {e}")
+
 # Configure rotating file loggers
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 root_logger = logging.getLogger()
@@ -103,6 +138,45 @@ WAITING_USERNAME, WAITING_PASSWORD = range(2)
 # Per-user cache: telegram_id -> {client, courses, profile, semester, timestamp}
 user_sessions: Dict[int, dict] = {}
 CACHE_TTL = 300  # 5 minutes
+SESSION_MAX_IDLE = 24 * 60 * 60  # evict idle in-memory sessions after 24 hours
+BACKUP_INTERVAL = 6 * 60 * 60    # automatic verified backup every 6 hours
+
+# Anti-flooding rate limiting: user_id -> timestamp of last request
+user_last_request_time: Dict[int, float] = {}
+user_last_refresh_time: Dict[int, float] = {}
+REQUEST_COOLDOWN = 1.5   # seconds between normal requests
+REFRESH_COOLDOWN = 20.0  # seconds between manual /refresh requests
+
+
+def prune_user_sessions():
+    """Frees in-memory sessions that have been idle, keeping memory bounded."""
+    now = datetime.now().timestamp()
+    stale = [
+        uid for uid, s in user_sessions.items()
+        if now - s.get("last_used", s.get("timestamp", 0)) > SESSION_MAX_IDLE
+    ]
+    for uid in stale:
+        user_sessions.pop(uid, None)
+    return len(stale)
+
+def check_rate_limit(user_id: int, is_refresh: bool = False) -> Tuple[bool, str]:
+    """Protects bot and university server from aggressive flooding."""
+    now = datetime.now().timestamp()
+    if is_refresh:
+        last_refresh = user_last_refresh_time.get(user_id, 0)
+        if now - last_refresh < REFRESH_COOLDOWN:
+            remaining = int(REFRESH_COOLDOWN - (now - last_refresh))
+            return True, f"يرجى الانتظار {remaining} ثانية قبل طلب تحديث البيانات مرة أخرى لتجنب ضغط سيرفر الجامعة."
+        user_last_refresh_time[user_id] = now
+        user_last_request_time[user_id] = now
+        return False, ""
+
+    last_req = user_last_request_time.get(user_id, 0)
+    if now - last_req < REQUEST_COOLDOWN:
+        return True, "يرجى الانتظار لحظة قبل إرسال طلب جديد."
+    user_last_request_time[user_id] = now
+    return False, ""
+
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -121,6 +195,7 @@ def get_user_client(telegram_id: int) -> Optional[ZajelClient]:
     if not user:
         return None
     username, password, _ = user
+    now = datetime.now().timestamp()
     if telegram_id not in user_sessions or user_sessions[telegram_id].get("username") != username:
         client = ZajelClient(username, password)
         user_sessions[telegram_id] = {
@@ -129,12 +204,19 @@ def get_user_client(telegram_id: int) -> Optional[ZajelClient]:
             "courses": None,
             "profile": None,
             "semester": "",
-            "timestamp": 0
+            "timestamp": 0,
+            "last_used": now
         }
+    else:
+        user_sessions[telegram_id]["last_used"] = now
     return user_sessions[telegram_id]["client"]
 
 
 async def get_cached_data(telegram_id: int, force_refresh: bool = False):
+    """
+    Fetches cached schedule and profile or requests them from Zajel in a background thread
+    so the asyncio event loop is never blocked.
+    """
     client = get_user_client(telegram_id)
     if not client:
         return None, "", None
@@ -145,8 +227,9 @@ async def get_cached_data(telegram_id: int, force_refresh: bool = False):
     if not force_refresh and session.get("courses") and (now - session.get("timestamp", 0) < CACHE_TTL):
         return session.get("profile"), session.get("semester", ""), session.get("courses")
 
-    profile = client.get_student_profile()
-    sem_name, courses = client.get_schedule()
+    # Run blocking HTTP scraping in thread pool
+    profile = await asyncio.to_thread(client.get_student_profile)
+    sem_name, courses = await asyncio.to_thread(client.get_schedule)
 
     if courses:
         session["courses"] = courses
@@ -223,11 +306,16 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception:
         pass
 
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return WAITING_PASSWORD
+
     status_msg = await update.message.reply_text("جاري التحقق من الحساب وتسجيل الدخول عبر زاجل...")
 
-    # Test login
+    # Test login in thread pool to prevent blocking the event loop
     client = ZajelClient(username, password)
-    success = client.login()
+    success = await asyncio.to_thread(client.login)
 
     if not success:
         await status_msg.edit_text(
@@ -237,12 +325,28 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.clear()
         return ConversationHandler.END
 
-    # Fetch profile to store student name
-    profile = client.get_student_profile()
+    # Fetch profile in thread pool
+    profile = await asyncio.to_thread(client.get_student_profile)
     student_name = profile.name if profile else ""
 
-    # Save encrypted credentials in database
-    db.save_user(user_id, username, password, student_name)
+    # Save encrypted credentials in database before creating a session
+    try:
+        db.save_user(user_id, username, password, student_name)
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}".lower()
+        logger.error(f"Failed to save user {user_id}: {e}\n{traceback.format_exc()}")
+        if "unique" in err or "integrity" in err or "duplicate" in err:
+            await status_msg.edit_text(
+                "هذا الرقم الجامعي مسجل بالفعل لدى حساب آخر في البوت.\n"
+                "لأسباب أمنية وتجنباً لتكرار الحسابات، لا يمكن ربط نفس الرقم الجامعي بأكثر من حساب تيليجرام واحد.\n\n"
+                "إذا كنت صاحب هذا الحساب وتواجه مشكلة، يرجى التواصل مع مسؤول البوت."
+            )
+        else:
+            await status_msg.edit_text(
+                "تعذر حفظ بياناتك في قاعدة البيانات. لم يتم تسجيل الدخول، يرجى المحاولة لاحقاً."
+            )
+        context.user_data.clear()
+        return ConversationHandler.END
 
     # Initialize user session
     user_sessions[user_id] = {
@@ -251,7 +355,8 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "courses": None,
         "profile": profile,
         "semester": "",
-        "timestamp": 0
+        "timestamp": 0,
+        "last_used": datetime.now().timestamp()
     }
 
     welcome_name = f" يا {student_name}" if student_name else ""
@@ -293,6 +398,11 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return
+
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
@@ -303,7 +413,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         client = get_user_client(user_id)
         student_name = profile.name if profile else "عزيزي الطالب"
-        day_name, items = client.get_today_classes(courses)
+        day_name, items = await asyncio.to_thread(client.get_today_classes, courses)
         text = formatter.format_today_classes(student_name, day_name, items)
         await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
     except Exception as e:
@@ -316,6 +426,11 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return
+
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
@@ -339,6 +454,11 @@ async def grades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return
+
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
@@ -351,7 +471,7 @@ async def grades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not client:
                 await update.message.reply_text("تعذر الاتصال بخادم زاجل.")
                 return
-            transcript = client.get_transcript()
+            transcript = await asyncio.to_thread(client.get_transcript)
             if transcript:
                 session["transcript"] = transcript
                 session["transcript_time"] = now
@@ -372,7 +492,6 @@ async def grades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Alias to grades_command
     await grades_command(update, context)
 
 
@@ -381,6 +500,11 @@ async def absences_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return
+
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
@@ -401,11 +525,16 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return
+
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
         client = get_user_client(user_id)
-        messages = client.get_important_messages()
+        messages = await asyncio.to_thread(client.get_important_messages)
         text = formatter.format_messages(messages)
         await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
     except Exception as e:
@@ -418,11 +547,16 @@ async def moodle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return
+
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
         client = get_user_client(user_id)
-        sso_url = client.get_moodle_sso_url()
+        sso_url = await asyncio.to_thread(client.get_moodle_sso_url)
 
         if sso_url:
             keyboard = InlineKeyboardMarkup([
@@ -452,6 +586,11 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    limited, limit_msg = check_rate_limit(user_id, is_refresh=True)
+    if limited:
+        await update.message.reply_text(limit_msg)
+        return
+
     await update.effective_chat.send_action(ChatAction.TYPING)
     msg = await update.message.reply_text("جاري الاتصال بخادم زاجل وتحديث بياناتك...")
 
@@ -499,7 +638,7 @@ async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
         return
 
     if os.path.exists("bot_errors.log") and os.path.getsize("bot_errors.log") > 0:
@@ -513,7 +652,7 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def logfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
         return
 
     target_file = "bot_errors.log" if os.path.exists("bot_errors.log") and os.path.getsize("bot_errors.log") > 0 else "bot.log"
@@ -526,25 +665,29 @@ async def logfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
         return
 
-    import sqlite3
-    conn = sqlite3.connect(db.DB_PATH)
-    count = conn.cursor().execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    conn.close()
+    count = db.get_user_count()
+    db_engine = "PostgreSQL (Cloud Database)" if db.DATABASE_URL else "SQLite (WAL Mode & Auto-Backup)"
+    backup_count, backup_latest = db.get_backup_summary()
+    backup_line = (
+        f"\n- Verified Backups: {backup_count} (latest: {backup_latest})"
+        if not db.DATABASE_URL else ""
+    )
 
     await update.message.reply_text(
         f"Bot Status Report:\n"
-        f"- Registered Users: {count}\n"
+        f"- Registered Students: {count}\n"
         f"- Active Sessions in Memory: {len(user_sessions)}\n"
+        f"- Storage Engine: {db_engine}{backup_line}\n"
         f"- Server Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
         return
 
     users = db.get_all_users()
@@ -565,7 +708,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
         return
 
     if not context.args:
@@ -593,9 +736,19 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=tid, text=announcement_msg)
             success_count += 1
+        except RetryAfter as e:
+            await asyncio.sleep(float(e.retry_after) + 1.0)
+            try:
+                await context.bot.send_message(chat_id=tid, text=announcement_msg)
+                success_count += 1
+            except Exception as retry_err:
+                logger.warning(f"Failed to send broadcast to {tid} after retry: {retry_err}")
+                fail_count += 1
         except Exception as e:
             logger.warning(f"Failed to send broadcast to {tid}: {e}")
             fail_count += 1
+        # Throttle to stay well below Telegram flood limits
+        await asyncio.sleep(0.05)
 
     await status_msg.edit_text(
         f"تقرير الإرسال الجماعي:\n\n"
@@ -607,7 +760,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
         return
 
     count = len(user_sessions)
@@ -620,7 +773,7 @@ async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def delete_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_USER_ID:
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
         return
 
     if not context.args:
@@ -642,6 +795,54 @@ async def delete_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"لم يتم العثور على أي مستخدم بالمعرف أو الرقم ({ident}).")
 
 
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only disaster recovery command to export database snapshots to Telegram."""
+    user_id = update.effective_user.id
+    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
+        return
+
+    await update.effective_chat.send_action(ChatAction.UPLOAD_DOCUMENT)
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        if db.DATABASE_URL:
+            # Export encrypted JSON dump for PostgreSQL
+            backup_data = db.export_backup_data()
+            json_bytes = json.dumps(backup_data, ensure_ascii=False, indent=2).encode("utf-8")
+            bio = io.BytesIO(json_bytes)
+            bio.name = f"zajel_backup_pg_{now_str}.json"
+            await update.message.reply_document(
+                document=bio,
+                filename=f"zajel_backup_pg_{now_str}.json",
+                caption=(
+                    f"نسخة احتياطية مشفرة (PostgreSQL)\n"
+                    f"إجمالي الطلاب: {backup_data['total_users']}\n"
+                    f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"تنبيه: لا يمكن فك التشفير بدون مفتاح APP_SECRET_KEY الأصلي."
+                )
+            )
+        else:
+            # Export atomic SQLite backup
+            backup_path = db.backup_sqlite_db() or db.DB_PATH
+            if os.path.exists(backup_path):
+                with open(backup_path, "rb") as doc:
+                    await update.message.reply_document(
+                        document=doc,
+                        filename=f"zajel_users_{now_str}.db",
+                        caption=(
+                            f"نسخة احتياطية آمنة وموثقة (SQLite WAL)\n"
+                            f"إجمالي الطلاب: {db.get_user_count()}\n"
+                            f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            f"تنبيه: احتفظ بنسخة من مفتاح APP_SECRET_KEY لفك التشفير عند الاستعادة."
+                        )
+                    )
+            else:
+                await update.message.reply_text("تعذر العثور على ملف قاعدة البيانات لإنشاء النسخة الاحتياطية.")
+    except Exception as e:
+        logger.error(f"Error in backup_command: {e}\n{traceback.format_exc()}")
+        await update.message.reply_text(f"حدث خطأ أثناء إنشاء النسخة الاحتياطية: {e}")
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global unhandled error handler"""
     err_str = str(context.error) if context.error else ""
@@ -661,11 +862,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = formatter.format_help()
-    if user_id == ADMIN_USER_ID:
+    if ADMIN_USER_ID > 0 and user_id == ADMIN_USER_ID:
         admin_tools = (
             "\n\nأوامر المشرف الخاصة:\n"
             "/status - تقرير حالة الخادم وعدد الطلاب\n"
             "/users - قائمة الطلاب المسجلين في البوت\n"
+            "/backup - تحميل نسخة احتياطية فورية لقاعدة البيانات\n"
             "/delete_user <id> - حذف حساب مستخدم نهائياً\n"
             "/broadcast <رسالة> - إرسال إشعار جماعي لكافة الطلاب\n"
             "/clear_cache - تفريغ الذاكرة المؤقتة بالكامل\n"
@@ -704,8 +906,7 @@ def main():
         sys.exit(1)
 
     print("Starting Multi-User Zajel Telegram Bot...")
-    start_health_check_server()
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
 
     # Login conversation handler
     login_conv = ConversationHandler(
@@ -737,6 +938,7 @@ def main():
     app.add_handler(CommandHandler("logfile", logfile_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("delete_user", delete_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("clear_cache", clear_cache_command))

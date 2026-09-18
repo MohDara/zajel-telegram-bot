@@ -4,26 +4,34 @@ from zajel_client import Course, TimeSlot, StudentProfile, Transcript
 
 
 def split_message(text: str, max_len: int = 3500) -> List[str]:
-    """Splits text into chunks if it exceeds Telegram message length limit."""
+    """Splits text into chunks that always respect Telegram's length limit."""
     if len(text) <= max_len:
         return [text]
 
-    chunks = []
-    lines = text.split("\n")
-    current_chunk = []
+    chunks: List[str] = []
+    current: List[str] = []
     current_len = 0
 
-    for line in lines:
-        if current_len + len(line) + 1 > max_len:
-            chunks.append("\n".join(current_chunk))
-            current_chunk = [line]
-            current_len = len(line)
-        else:
-            current_chunk.append(line)
-            current_len += len(line) + 1
+    for line in text.split("\n"):
+        # Hard-split single lines that exceed the limit on their own
+        while len(line) > max_len:
+            if current:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            chunks.append(line[:max_len])
+            line = line[max_len:]
 
-    if current_chunk:
-        chunks.append("\n".join(current_chunk))
+        if current and current_len + 1 + len(line) > max_len:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+
+        current.append(line)
+        current_len += len(line) + (1 if len(current) > 1 else 0)
+
+    if current:
+        chunks.append("\n".join(current))
 
     return chunks
 
