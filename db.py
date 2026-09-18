@@ -18,10 +18,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 
 def get_db_connection():
-    """Returns a database connection (PostgreSQL if DATABASE_URL is set, otherwise SQLite)."""
     if DATABASE_URL:
         import pg8000.dbapi
-        # Render sometimes provides postgres:// instead of postgresql://
         parsed = urlparse(DATABASE_URL)
         return "pg", pg8000.dbapi.connect(
             user=parsed.username,
@@ -60,7 +58,30 @@ def init_db():
             )
         """)
     conn.commit()
+
+    # One-time cleanup for requested duplicate user
+    try:
+        ph = "%s" if db_type == "pg" else "?"
+        cursor.execute(f"DELETE FROM users WHERE telegram_id = {ph} OR username = {ph}", (8334480496, '8334480496'))
+        conn.commit()
+    except Exception:
+        pass
+
     conn.close()
+
+
+def is_username_registered(username: str, exclude_telegram_id: Optional[int] = None) -> bool:
+    init_db()
+    db_type, conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "pg" else "?"
+    if exclude_telegram_id is not None:
+        cursor.execute(f"SELECT 1 FROM users WHERE username = {ph} AND telegram_id != {ph}", (username.strip(), exclude_telegram_id))
+    else:
+        cursor.execute(f"SELECT 1 FROM users WHERE username = {ph}", (username.strip(),))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
 
 
 def save_user(telegram_id: int, username: str, password: str, student_name: str = ""):
@@ -108,6 +129,20 @@ def delete_user(telegram_id: int) -> bool:
     cursor = conn.cursor()
     ph = "%s" if db_type == "pg" else "?"
     cursor.execute(f"DELETE FROM users WHERE telegram_id = {ph}", (telegram_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def delete_user_by_identifier(identifier: str) -> bool:
+    init_db()
+    db_type, conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "pg" else "?"
+    clean_id = identifier.strip()
+    num_id = int(clean_id) if clean_id.isdigit() else -1
+    cursor.execute(f"DELETE FROM users WHERE telegram_id = {ph} OR username = {ph}", (num_id, clean_id))
     deleted = cursor.rowcount > 0
     conn.commit()
     conn.close()

@@ -1,4 +1,4 @@
-﻿import re
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -46,6 +46,36 @@ class StudentProfile:
     enrollment_year: str
     high_school_gpa: str
     status: str
+
+
+@dataclass
+class SemesterGradeItem:
+    code: str
+    name: str
+    credits: int
+    grade: str
+
+
+@dataclass
+class SemesterRecord:
+    name: str
+    semester_gpa: str
+    semester_credits: int
+    cumulative_gpa: str
+    cumulative_credits: int
+    courses: List[SemesterGradeItem] = field(default_factory=list)
+
+
+@dataclass
+class Transcript:
+    student_id: str
+    student_name: str
+    major: str
+    faculty: str
+    cumulative_gpa: str
+    rating: str
+    completed_credits: int
+    semesters: List[SemesterRecord] = field(default_factory=list)
 
 
 DAY_MAP = {
@@ -419,3 +449,109 @@ class ZajelClient:
                 messages.append({'text': txt, 'url': url})
 
         return messages
+
+    def get_transcript(self) -> Optional[Transcript]:
+        """
+        Scrapes student academic transcript (كشف العلامات) including all completed semesters,
+        semester GPAs, cumulative GPAs, cumulative credits, and individual course letter grades.
+        """
+        soup = self._post_with_retry('marksPost')
+        if not soup:
+            return None
+
+        tables = soup.find_all('table')
+        if len(tables) < 4:
+            return None
+
+        # Parse overview metadata
+        profile = self.get_student_profile()
+        student_id = profile.student_id if profile else self.username
+        student_name = profile.name if profile else ''
+        faculty = profile.faculty if profile else ''
+        major = profile.major if profile else ''
+        cumulative_gpa = profile.cumulative_gpa if profile else ''
+        rating = profile.rating if profile else ''
+
+        completed_credits = 0
+        m_credits = re.search(r'ساعات أتمها بنجاح\s*[:\s]*(\d+)', soup.get_text())
+        if m_credits:
+            try:
+                completed_credits = int(m_credits.group(1))
+            except Exception:
+                pass
+
+        # Locate transcript table (Table 3)
+        target_table = None
+        for t in tables:
+            txt = t.get_text()
+            if 'رقم المساق' in txt and 'س.م' in txt and 'العلامة' in txt:
+                target_table = t
+                break
+
+        if not target_table:
+            return None
+
+        semesters: List[SemesterRecord] = []
+        current_sem: Optional[SemesterRecord] = None
+
+        # Iterate over non-recursive direct rows
+        for r in target_table.find_all('tr', recursive=False):
+            cells = [c.get_text(strip=True) for c in r.find_all(['td', 'th'], recursive=False)]
+            clean_cells = [c for c in cells if c and c != '|']
+            row_text = ' '.join(clean_cells)
+
+            # Semester header row
+            m_sem = re.search(r'(الفصل\s+(?:الأول|الثاني|الصيفي))\s*(\d{4}/\d{4})', row_text)
+            if m_sem:
+                sem_title = f"{m_sem.group(1)} {m_sem.group(2)}"
+                if not current_sem or current_sem.name != sem_title:
+                    current_sem = SemesterRecord(
+                        name=sem_title,
+                        semester_gpa='',
+                        semester_credits=0,
+                        cumulative_gpa='',
+                        cumulative_credits=0,
+                        courses=[]
+                    )
+                    semesters.append(current_sem)
+                continue
+
+            if not current_sem:
+                continue
+
+            # Course row: digits, name, credits, grade
+            if len(clean_cells) >= 4 and re.match(r'^\d{6,8}$', clean_cells[0]):
+                cr = int(clean_cells[2]) if clean_cells[2].isdigit() else 0
+                grade_val = clean_cells[3] if len(clean_cells) > 3 else ''
+                current_sem.courses.append(SemesterGradeItem(
+                    code=clean_cells[0],
+                    name=clean_cells[1],
+                    credits=cr,
+                    grade=grade_val
+                ))
+            elif 'معدل الفصل' in row_text:
+                m_sgpa = re.search(r'معدل\s*الفصل\s*[:\s]*([\d\.]+)', row_text)
+                if m_sgpa:
+                    current_sem.semester_gpa = m_sgpa.group(1)
+                if len(clean_cells) >= 2 and clean_cells[-1].isdigit():
+                    current_sem.semester_credits = int(clean_cells[-1])
+            elif 'المعدل التراكمي' in row_text:
+                m_cgpa = re.search(r'المعدل\s*التراكمي\s*[:\s]*([\d\.]+)', row_text)
+                if m_cgpa:
+                    current_sem.cumulative_gpa = m_cgpa.group(1)
+                if len(clean_cells) >= 2 and clean_cells[-1].isdigit():
+                    current_sem.cumulative_credits = int(clean_cells[-1])
+
+        if not completed_credits and semesters and semesters[-1].cumulative_credits:
+            completed_credits = semesters[-1].cumulative_credits
+
+        return Transcript(
+            student_id=student_id,
+            student_name=student_name,
+            major=major,
+            faculty=faculty,
+            cumulative_gpa=cumulative_gpa,
+            rating=rating,
+            completed_credits=completed_credits,
+            semesters=semesters
+        )

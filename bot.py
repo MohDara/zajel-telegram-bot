@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from logging.handlers import RotatingFileHandler
 import os
 import sys
@@ -35,7 +35,7 @@ from telegram.ext import (
 
 import db
 import formatter
-from zajel_client import ZajelClient, Course, StudentProfile
+from zajel_client import ZajelClient, Course, StudentProfile, Transcript
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
@@ -102,7 +102,7 @@ CACHE_TTL = 300  # 5 minutes
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("محاضرات اليوم"), KeyboardButton("البرنامج الأسبوعي")],
-        [KeyboardButton("بطاقة الطالب"), KeyboardButton("سجل الغيابات")],
+        [KeyboardButton("كشف العلامات"), KeyboardButton("سجل الغيابات")],
         [KeyboardButton("الرسائل الهامة"), KeyboardButton("بوابة مودل Moodle")],
         [KeyboardButton("تحديث البيانات"), KeyboardButton("تسجيل الخروج")]
     ],
@@ -184,6 +184,16 @@ async def receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not text.isdigit() or len(text) < 6:
         await update.message.reply_text("يرجى إدخال رقم جامعي صحيح (أرقام فقط):")
         return WAITING_USERNAME
+
+    user_id = update.effective_user.id
+    if db.is_username_registered(text, exclude_telegram_id=user_id):
+        await update.message.reply_text(
+            "هذا الرقم الجامعي مسجل بالفعل لدى حساب آخر في البوت.\n"
+            "لأسباب أمنية وتجنباً لتكرار الحسابات، لا يمكن ربط نفس الرقم الجامعي بأكثر من حساب تيليجرام واحد.\n\n"
+            "إذا كنت صاحب هذا الحساب وتواجه مشكلة، يرجى التواصل مع مسؤول البوت."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
 
     context.user_data["login_username"] = text
     await update.message.reply_text(
@@ -316,7 +326,7 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("حدث خطأ أثناء جلب البرنامج الدراسي.")
 
 
-async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def grades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_logged_in(update):
         return
 
@@ -324,16 +334,38 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     try:
-        profile, _, _ = await get_cached_data(user_id)
-        if not profile:
-            await update.message.reply_text("تعذر جلب بيانات الطالب من زاجل.")
+        session = user_sessions.get(user_id, {})
+        now = datetime.now().timestamp()
+        transcript = session.get("transcript")
+
+        if not transcript or (now - session.get("transcript_time", 0) > CACHE_TTL):
+            client = get_user_client(user_id)
+            if not client:
+                await update.message.reply_text("تعذر الاتصال بخادم زاجل.")
+                return
+            transcript = client.get_transcript()
+            if transcript:
+                session["transcript"] = transcript
+                session["transcript_time"] = now
+                if transcript.student_name:
+                    db.update_student_name(user_id, transcript.student_name)
+
+        if not transcript:
+            await update.message.reply_text("تعذر جلب كشف العلامات من زاجل. يرجى المحاولة لاحقاً.")
             return
 
-        text = formatter.format_student_profile(profile)
-        await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
+        text = formatter.format_transcript(transcript)
+        chunks = formatter.split_message(text)
+        for chunk in chunks:
+            await update.message.reply_text(chunk, reply_markup=MAIN_KEYBOARD)
     except Exception as e:
-        logger.error(f"Error in profile_command for user {user_id}: {e}\n{traceback.format_exc()}")
-        await update.message.reply_text("حدث خطأ أثناء جلب بطاقة الطالب.")
+        logger.error(f"Error in grades_command for user {user_id}: {e}\n{traceback.format_exc()}")
+        await update.message.reply_text("حدث خطأ أثناء جلب كشف العلامات.")
+
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Alias to grades_command
+    await grades_command(update, context)
 
 
 async def absences_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,11 +448,18 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("جاري الاتصال بخادم زاجل وتحديث بياناتك...")
 
     try:
+        if user_id in user_sessions:
+            user_sessions[user_id]["courses"] = None
+            user_sessions[user_id]["transcript"] = None
+            user_sessions[user_id]["timestamp"] = 0
+            user_sessions[user_id]["transcript_time"] = 0
+
         profile, sem_name, courses = await get_cached_data(user_id, force_refresh=True)
         if courses:
             await msg.edit_text(
                 f"تم تحديث البيانات بنجاح.\n"
-                f"تم تحميل {len(courses)} مساقات لفصل ({sem_name})."
+                f"تم تحميل {len(courses)} مساقات لفصل ({sem_name}).\n"
+                "تم تجديد كشف العلامات والغيابات مباشرة من خادم زاجل."
             )
         else:
             await msg.edit_text("تعذر تحديث البيانات من زاجل حالياً. يرجى المحاولة لاحقاً.")
@@ -571,6 +610,30 @@ async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+async def delete_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_USER_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "يرجى تحديد المعرف أو الرقم الجامعي بعد الأمر.\n"
+            "مثال:\n"
+            "/delete_user 8334480496"
+        )
+        return
+
+    ident = context.args[0].strip()
+    deleted = db.delete_user_by_identifier(ident)
+    if ident.isdigit() and int(ident) in user_sessions:
+        del user_sessions[int(ident)]
+
+    if deleted:
+        await update.message.reply_text(f"تم حذف المستخدم ({ident}) بنجاح من قاعدة البيانات.")
+    else:
+        await update.message.reply_text(f"لم يتم العثور على أي مستخدم بالمعرف أو الرقم ({ident}).")
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global unhandled error handler"""
     logger.error(f"Exception while handling an update: {context.error}\n{traceback.format_exc()}")
@@ -589,6 +652,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n\nأوامر المشرف الخاصة:\n"
             "/status - تقرير حالة الخادم وعدد الطلاب\n"
             "/users - قائمة الطلاب المسجلين في البوت\n"
+            "/delete_user <id> - حذف حساب مستخدم نهائياً\n"
             "/broadcast <رسالة> - إرسال إشعار جماعي لكافة الطلاب\n"
             "/clear_cache - تفريغ الذاكرة المؤقتة بالكامل\n"
             "/logs - عرض آخر الأخطاء المسجلة\n"
@@ -604,8 +668,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await today_command(update, context)
     elif text == "البرنامج الأسبوعي":
         await schedule_command(update, context)
-    elif text == "بطاقة الطالب":
-        await profile_command(update, context)
+    elif text in ["كشف العلامات", "بطاقة الطالب"]:
+        await grades_command(update, context)
     elif text == "سجل الغيابات":
         await absences_command(update, context)
     elif text == "الرسائل الهامة":
@@ -644,7 +708,9 @@ def main():
     # User Command handlers
     app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("schedule", schedule_command))
-    app.add_handler(CommandHandler("profile", profile_command))
+    app.add_handler(CommandHandler("grades", grades_command))
+    app.add_handler(CommandHandler("transcript", grades_command))
+    app.add_handler(CommandHandler("profile", grades_command))
     app.add_handler(CommandHandler("absences", absences_command))
     app.add_handler(CommandHandler("messages", messages_command))
     app.add_handler(CommandHandler("moodle", moodle_command))
@@ -657,6 +723,7 @@ def main():
     app.add_handler(CommandHandler("logfile", logfile_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("delete_user", delete_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("clear_cache", clear_cache_command))
 

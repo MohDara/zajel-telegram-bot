@@ -1,6 +1,6 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import List, Tuple, Dict, Optional
-from zajel_client import Course, TimeSlot, StudentProfile
+from zajel_client import Course, TimeSlot, StudentProfile, Transcript
 
 
 def split_message(text: str, max_len: int = 3500) -> List[str]:
@@ -102,6 +102,36 @@ def format_student_profile(p: StudentProfile) -> str:
     return "\n".join(lines)
 
 
+def format_transcript(t: Transcript) -> str:
+    lines = [
+        "كشف العلامات وسجل الدرجات الأكاديمي\n",
+        f"الطالب: {t.student_name} ({t.student_id})",
+        f"الكلية: {t.faculty}",
+        f"التخصص: {t.major}",
+        f"المعدل التراكمي: {t.cumulative_gpa} ({t.rating})",
+        f"الساعات المنجزة بنجاح: {t.completed_credits} س.م\n"
+    ]
+
+    if not t.semesters:
+        lines.append("لا توجد فصول دراسية مسجلة في كشف العلامات.")
+        return "\n".join(lines).strip()
+
+    # Show latest semester first
+    for s in reversed(t.semesters):
+        lines.append(f"[{s.name}]")
+        sgpa = s.semester_gpa if s.semester_gpa else "--"
+        scr = f"{s.semester_credits}" if s.semester_credits else "--"
+        cgpa = s.cumulative_gpa if s.cumulative_gpa else "--"
+        lines.append(f"معدل الفصل: {sgpa} | س. الفصل: {scr} | التراكمي بعده: {cgpa}")
+
+        for c in s.courses:
+            g = c.grade if c.grade else "--"
+            lines.append(f"• {c.name} ({c.credits} س.م): {g}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 def format_absences(courses: List[Course]) -> str:
     if not courses:
         return "لا توجد مساقات مسجلة حالياً."
@@ -147,10 +177,10 @@ def format_help() -> str:
         "يمكنك استخدام الأزرار أدناه أو الأوامر التالية:\n\n"
         "/today - جدول ومحاضرات اليوم\n"
         "/schedule - البرنامج الأسبوعي كاملاً\n"
-        "/profile - بيانات الطالب والمعدل التراكمي\n"
+        "/grades - كشف العلامات وسجل الدرجات\n"
         "/absences - ساعات الغياب والحرمان\n"
         "/messages - الرسائل والإعلانات الهامة\n"
         "/moodle - رابط تسجيل الدخول المباشر إلى مودل\n"
-        "/refresh - تحديث البيانات من خادم زاجل\n"
+        "/refresh - تحديث البيانات فوراً من خادم زاجل\n"
         "/logout - تسجيل الخروج وحذف البيانات من البوت"
     )
