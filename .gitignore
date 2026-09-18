@@ -1,0 +1,19 @@
+﻿# Secrets & sensitive data
+.env
+*.db
+*.sqlite3
+
+# Logs
+*.log
+bot.log
+bot_errors.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.class
+*.pyc
+
+# Local data / scratch
+*.html
+*.json
