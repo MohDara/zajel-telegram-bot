@@ -116,29 +116,40 @@ class ZajelClient:
 
             # Step 3: Post password
             resp3 = self.session.post(url3, data={'gsw': self.password}, timeout=15)
-            soup3 = BeautifulSoup(resp3.content.decode('windows-1256', errors='replace'), 'html.parser')
+            html3 = resp3.content.decode('windows-1256', errors='replace')
+            if 'غير صحيحة' in html3:
+                return False
+
+            soup3 = BeautifulSoup(html3, 'html.parser')
             form3 = soup3.find('form')
             if not form3 or not form3.get('action'):
                 return False
-            url4 = urljoin(resp3.url, form3.get('action'))
+
+            action3 = form3.get('action', '')
+            if 'login' not in action3.lower():
+                return False
+
+            url4 = urljoin(resp3.url, action3)
 
             # Step 4: Login with timestamp
             ts = str(int(time.time() * 1000))
             resp4 = self.session.post(url4, data={'startDate': ts}, timeout=15)
-            soup4 = BeautifulSoup(resp4.content.decode('windows-1256', errors='replace'), 'html.parser')
+            html4 = resp4.content.decode('windows-1256', errors='replace')
+            soup4 = BeautifulSoup(html4, 'html.parser')
             form4 = soup4.find('form')
             if not form4 or not form4.get('action'):
                 return False
 
-            action4 = form4.get('action')
-            if 'WhitePage' in action4:
+            action4 = form4.get('action', '')
+            if 'mainn' not in action4.lower():
                 return False
 
             url5 = urljoin(resp4.url, action4)
 
             # Step 5: Complete login into mainN
             resp5 = self.session.post(url5, timeout=15)
-            if resp5.status_code == 200:
+            html5 = resp5.content.decode('windows-1256', errors='replace')
+            if resp5.status_code == 200 and ('start' in html5 or 'ZajSSChk' in html5 or 'mainfont' in html5):
                 self.is_logged_in = True
                 self._last_login_time = time.time()
                 return True

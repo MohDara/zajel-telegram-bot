@@ -157,6 +157,7 @@ async def get_cached_data(telegram_id: int, force_refresh: bool = False):
 # --- START & LOGIN CONVERSATION ---
 
 async def start_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
     user_id = update.effective_user.id
     existing_user = db.get_user(user_id)
 
@@ -547,7 +548,8 @@ def main():
             WAITING_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_username)],
             WAITING_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_login)],
+        fallbacks=[CommandHandler("cancel", cancel_login), CommandHandler("start", start_entry)],
+        allow_reentry=True
     )
     app.add_handler(login_conv)
 
