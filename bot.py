@@ -172,10 +172,7 @@ async def start_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "أهلاً بك في بوت زاجل الجامعي.\n\n"
-        "تمت ترقية النظام إلى سيرفرات أسرع، وإضافة ميزة كشف العلامات وسجل الدرجات.\n"
-        "قريباً: ميزة العلامات اليومية فور رصدها.\n\n"
-        "لتسجيل الدخول، يرجى إرسال رقمك الجامعي:",
+        "لتسجيل الدخول بحساب زاجل، يرجى إرسال رقمك الجامعي:",
         reply_markup=ReplyKeyboardRemove()
     )
     return WAITING_USERNAME
