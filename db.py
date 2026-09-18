@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sqlite3
 from typing import Optional, Tuple, List, Dict
 from urllib.parse import urlparse
@@ -20,14 +20,24 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 def get_db_connection():
     if DATABASE_URL:
         import pg8000.dbapi
+        import ssl
         parsed = urlparse(DATABASE_URL)
+        host = parsed.hostname or "localhost"
+        if host in ["localhost", "127.0.0.1"]:
+            ssl_ctx = None
+        else:
+            ssl_ctx = ssl.create_default_context()
+            if "." not in host:
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+
         return "pg", pg8000.dbapi.connect(
             user=parsed.username,
             password=parsed.password,
-            host=parsed.hostname,
+            host=host,
             port=parsed.port or 5432,
             database=parsed.path.lstrip("/"),
-            ssl_context=True if parsed.hostname not in ["localhost", "127.0.0.1"] else None
+            ssl_context=ssl_ctx
         )
     return "sqlite", sqlite3.connect(DB_PATH)
 
