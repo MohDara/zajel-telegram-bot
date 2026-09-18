@@ -1,13 +1,27 @@
+import os
 import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple, Dict
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
+
+
+def get_local_now() -> datetime:
+    """
+    Returns current datetime in Palestine timezone (Asia/Jerusalem / UTC+2 or UTC+3 DST).
+    Falls back to UTC+3 (Palestine summer time) if zoneinfo data is unavailable.
+    """
+    tz_name = os.getenv("TIMEZONE", "Asia/Jerusalem")
+    try:
+        return datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        return datetime.now(timezone(timedelta(hours=3)))
 
 
 @dataclass
@@ -381,7 +395,7 @@ class ZajelClient:
         return semester_name, courses
 
     def get_today_classes(self, courses: Optional[List[Course]] = None) -> Tuple[str, List[Tuple[Course, TimeSlot]]]:
-        now = datetime.now()
+        now = get_local_now()
         day_key = WEEKDAY_TO_DAY_KEY.get(now.weekday(), 'احد')
         today_name = DAY_MAP.get(day_key, 'اليوم')
 

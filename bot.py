@@ -39,7 +39,7 @@ from telegram.ext import (
 
 import db
 import formatter
-from zajel_client import ZajelClient, Course, StudentProfile, Transcript
+from zajel_client import ZajelClient, Course, StudentProfile, Transcript, get_local_now
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
@@ -681,7 +681,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- Registered Students: {count}\n"
         f"- Active Sessions in Memory: {len(user_sessions)}\n"
         f"- Storage Engine: {db_engine}{backup_line}\n"
-        f"- Server Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"- Server Time: {get_local_now().strftime('%Y-%m-%d %H:%M:%S')} (Palestine Time)"
     )
 
 
@@ -802,7 +802,8 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.effective_chat.send_action(ChatAction.UPLOAD_DOCUMENT)
-    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    now_local = get_local_now()
+    now_str = now_local.strftime("%Y%m%d_%H%M%S")
 
     try:
         if db.DATABASE_URL:
@@ -817,7 +818,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=(
                     f"نسخة احتياطية مشفرة (PostgreSQL)\n"
                     f"إجمالي الطلاب: {backup_data['total_users']}\n"
-                    f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"التاريخ: {now_local.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"تنبيه: لا يمكن فك التشفير بدون مفتاح APP_SECRET_KEY الأصلي."
                 )
             )
@@ -832,7 +833,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=(
                             f"نسخة احتياطية آمنة وموثقة (SQLite WAL)\n"
                             f"إجمالي الطلاب: {db.get_user_count()}\n"
-                            f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            f"التاريخ: {now_local.strftime('%Y-%m-%d %H:%M:%S')}\n"
                             f"تنبيه: احتفظ بنسخة من مفتاح APP_SECRET_KEY لفك التشفير عند الاستعادة."
                         )
                     )

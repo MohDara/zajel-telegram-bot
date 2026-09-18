@@ -2,8 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Ensure unbuffered python output
+# Ensure unbuffered python output and timezone
 ENV PYTHONUNBUFFERED=1
+ENV TZ="Asia/Jerusalem"
 
 # Default persistent data paths (mount a Docker volume at /app/data for persistence)
 ENV DB_PATH=/app/data/zajel_users.db

@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
-from zajel_client import Course, TimeSlot, StudentProfile, Transcript
+from zajel_client import Course, TimeSlot, StudentProfile, Transcript, get_local_now
 
 
 def split_message(text: str, max_len: int = 3500) -> List[str]:
@@ -36,8 +36,8 @@ def split_message(text: str, max_len: int = 3500) -> List[str]:
     return chunks
 
 
-def format_today_classes(student_name: str, day_name: str, items: List[Tuple[Course, TimeSlot]]) -> str:
-    today_str = datetime.now().strftime("%Y/%m/%d")
+def format_today_classes(student_name: str, day_name: str, items: List[Tuple[Course, TimeSlot]], today_date: Optional[str] = None) -> str:
+    today_str = today_date or get_local_now().strftime("%Y/%m/%d")
 
     if not items:
         return (
