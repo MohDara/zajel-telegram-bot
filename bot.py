@@ -37,6 +37,32 @@ import db
 import formatter
 from zajel_client import ZajelClient, Course, StudentProfile
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Zajel Telegram Bot is active and running!")
+
+    def log_message(self, format, *args):
+        pass
+
+def start_health_check_server():
+    port_str = os.getenv("PORT", "").strip()
+    if not port_str:
+        return
+    try:
+        port = int(port_str)
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info(f"Cloud health check HTTP server listening on port {port}")
+    except Exception as e:
+        logger.warning(f"Could not start health check server on port {port_str}: {e}")
+
 # Configure rotating file loggers
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 root_logger = logging.getLogger()
@@ -511,6 +537,7 @@ def main():
         sys.exit(1)
 
     print("Starting Multi-User Zajel Telegram Bot...")
+    start_health_check_server()
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Login conversation handler
