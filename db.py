@@ -68,15 +68,6 @@ def init_db():
             )
         """)
     conn.commit()
-
-    # One-time cleanup for requested duplicate user
-    try:
-        ph = "%s" if db_type == "pg" else "?"
-        cursor.execute(f"DELETE FROM users WHERE telegram_id = {ph} OR username = {ph}", (8334480496, '8334480496'))
-        conn.commit()
-    except Exception:
-        pass
-
     conn.close()
 
 

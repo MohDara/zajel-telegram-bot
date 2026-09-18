@@ -172,8 +172,10 @@ async def start_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "أهلاً بك في بوت خدمات زاجل - جامعة النجاح الوطنية.\n\n"
-        "لتسجيل الدخول لأول مرة، يرجى إرسال رقمك الجامعي:",
+        "أهلاً بك في بوت زاجل الجامعي.\n\n"
+        "تمت ترقية النظام إلى سيرفرات أسرع، وإضافة ميزة كشف العلامات وسجل الدرجات.\n"
+        "قريباً: ميزة العلامات اليومية فور رصدها.\n\n"
+        "لتسجيل الدخول، يرجى إرسال رقمك الجامعي:",
         reply_markup=ReplyKeyboardRemove()
     )
     return WAITING_USERNAME
@@ -272,8 +274,9 @@ async def check_user_logged_in(update: Update) -> bool:
     user_id = update.effective_user.id
     if not db.get_user(user_id):
         await update.message.reply_text(
-            "أهلاً بك! تم ترقية نظام البوت إلى خوادم وقواعد بيانات سحابية دائمة.\n\n"
-            "يرجى الضغط على /start لتسجيل الدخول لمرة واحدة بحساب زاجل، وسيظل حسابك محفوظاً بشكل دائم.",
+            "أهلاً بك في بوت زاجل الجامعي.\n\n"
+            "تمت ترقية النظام إلى سيرفرات أسرع وإضافة ميزة كشف العلامات، وقريباً ميزة العلامات اليومية.\n\n"
+            "يرجى الضغط على /start لتسجيل الدخول بحساب زاجل.",
             reply_markup=ReplyKeyboardRemove()
         )
         return False
@@ -636,6 +639,12 @@ async def delete_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global unhandled error handler"""
+    err_str = str(context.error) if context.error else ""
+    if "Conflict" in err_str and "getUpdates" in err_str:
+        # Standard zero-downtime rolling deploy handover on cloud container platforms
+        logger.info("Temporary polling handover during zero-downtime container deploy.")
+        return
+
     logger.error(f"Exception while handling an update: {context.error}\n{traceback.format_exc()}")
     if isinstance(update, Update) and update.effective_message:
         try:
