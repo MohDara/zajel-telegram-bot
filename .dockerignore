@@ -1,0 +1,27 @@
+﻿# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and storage
+*.db
+*.sqlite3
+zajel_users.db
+
+# Logs
+*.log
+bot.log
+bot_errors.log
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+
+# Git and IDE
+.git
+.gitignore
+.vscode/
+.idea/

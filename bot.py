@@ -89,8 +89,8 @@ logger = logging.getLogger("ZajelBot")
 
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-ADMIN_USER_ID_STR = os.getenv("ALLOWED_USER_ID", "123456789").strip()
-ADMIN_USER_ID = int(ADMIN_USER_ID_STR) if ADMIN_USER_ID_STR.isdigit() else 123456789
+ADMIN_USER_ID_STR = os.getenv("ALLOWED_USER_ID", "").strip()
+ADMIN_USER_ID = int(ADMIN_USER_ID_STR) if ADMIN_USER_ID_STR.isdigit() else 0
 
 # Conversation states for multi-student login
 WAITING_USERNAME, WAITING_PASSWORD = range(2)

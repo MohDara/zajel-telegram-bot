@@ -42,21 +42,21 @@ print("Test 1 Passed: Secure database storage, Fernet encryption, and duplicate 
 mock_transcript = Transcript(
     student_id="12000000",
     student_name="طالب تجريبي",
-    major="هندسة الحاسوب",
+    major="علم الحاسوب",
     faculty="الهندسة وتكنولوجيا المعلومات",
-    cumulative_gpa="2.99",
-    rating="جيد",
-    completed_credits=108,
+    cumulative_gpa="3.50",
+    rating="جيد جداً",
+    completed_credits=90,
     semesters=[
         SemesterRecord(
-            name="الفصل الثاني 2026/2025",
-            semester_gpa="2.97",
-            semester_credits=19,
-            cumulative_gpa="2.99",
-            cumulative_credits=108,
+            name="الفصل الأول 2026/2025",
+            semester_gpa="3.60",
+            semester_credits=15,
+            cumulative_gpa="3.50",
+            cumulative_credits=90,
             courses=[
-                SemesterGradeItem(code="10636314", name="الخوارزميات وحسابات التعقيد", credits=3, grade="B"),
-                SemesterGradeItem(code="10636316", name="برمجة الويب", credits=3, grade="B"),
+                SemesterGradeItem(code="10636111", name="تراكيب البيانات", credits=3, grade="A"),
+                SemesterGradeItem(code="10636112", name="برمجة الويب", credits=3, grade="B+"),
             ]
         )
     ]
@@ -64,8 +64,8 @@ mock_transcript = Transcript(
 formatted_t = formatter.format_transcript(mock_transcript)
 assert "─" not in formatted_t, "Long divider line found in transcript format!"
 assert "🎓" not in formatted_t, "Emoji found in transcript format!"
-assert "الخوارزميات وحسابات التعقيد" in formatted_t
-assert "2.99" in formatted_t
+assert "تراكيب البيانات" in formatted_t
+assert "3.50" in formatted_t
 print("Test 2 Passed: Clean transcript typography without emojis and long lines")
 
 # 3. Live Zajel Portal Test
