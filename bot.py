@@ -127,6 +127,10 @@ root_logger.addHandler(error_file_handler)
 
 logger = logging.getLogger("ZajelBot")
 
+# Suppress HTTP request logging to prevent bot token exposure in log files
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 ADMIN_USER_ID_STR = os.getenv("ALLOWED_USER_ID", "").strip()
@@ -780,7 +784,7 @@ async def delete_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "يرجى تحديد المعرف أو الرقم الجامعي بعد الأمر.\n"
             "مثال:\n"
-            "/delete_user 8334480496"
+            "/delete_user 123456789"
         )
         return
 

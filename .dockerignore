@@ -2,11 +2,17 @@
 .env
 .env.*
 !.env.example
+.app_secret.key
+*.key
 
 # Local databases and storage
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 zajel_users.db
+*.bak
+backups/
 
 # Logs
 *.log
