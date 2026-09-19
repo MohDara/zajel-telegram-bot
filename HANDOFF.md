@@ -16,8 +16,7 @@ This document records the security and data-integrity review performed for the p
 | No third parties or proxies | Direct HTTPS only to `https://zajeles.najah.edu` and `https://moodle.najah.edu` (`zajel_client.py`). |
 | No credential logging | Logs record connection status and errors only; passwords are never logged (`bot.py` logging setup). |
 | Session isolation | Academic data is cached in RAM per Telegram user with a 5-minute TTL and pruned after 24h idle. |
-| Student-controlled deletion | `/logout` removes the stored credentials and the in-memory session immediately. |
-| Admin-only data access | `/users`, `/backup`, `/delete_user`, `/broadcast`, `/logs`, `/logfile`, `/status`, `/clear_cache` are restricted to `ALLOWED_USER_ID`; if the variable is unset, admin access is disabled entirely (`bot.py`). |
+| Zero-Knowledge Admin | Student names are never stored in the database. `/users`, `/backup`, and `/delete_user` are completely removed from the codebase so no rosters or student identities can ever be queried or dumped. `/status` provides aggregate counts only. |
 
 Git history verification: the repository contains source, documentation, and configuration templates only. No `.env`, encryption key, database file, backup, or log file has ever been committed. The live secrets were also checked against every object in git history and are not present.
 
@@ -109,9 +108,7 @@ RuntimeError: ... exit code: 1
 
 - **Server compromise:** the encryption key and the encrypted database live on the same host. An attacker with full server access could decrypt stored credentials. Use `APP_SECRET_KEY` from the hosting provider's secret store and keep an off-site copy.
 - **Telegram account security:** a user's Telegram account controls access to that user's data. Telegram chats with the bot are not end-to-end encrypted; stored passwords remain Fernet-encrypted, but live responses are visible to anyone with access to the account.
-- **`/backup` exports:** database dumps sent to the admin remain encrypted and are useless without the original `APP_SECRET_KEY`.
-- **PostgreSQL connections:** one connection per query (no pooling). This is a performance characteristic, not a data-loss risk.
-- **`delete_user_by_identifier()`:** a numeric argument is treated as a Telegram ID first, then as a student number. This is documented, admin-only behavior.
+- **Zero-knowledge roster:** the admin has zero ability to query, list, or export student users or names from Telegram. Only aggregate counts are reported via `/status`.
 - **Health-check endpoint:** the optional HTTP server binds `0.0.0.0:PORT` and serves a static string without authentication; it exposes no application data.
 - **Logs:** ERROR/WARNING entries may contain Telegram user IDs. They do not contain names, passwords, or academic records.
 - **Supply chain:** dependencies are pinned to tested versions; review updates deliberately before bumping.

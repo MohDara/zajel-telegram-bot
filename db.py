@@ -336,6 +336,13 @@ def init_db():
         backup_sqlite_db()
     _verify_encryption_key()
 
+    # Zero-knowledge: purge any previously saved student names from the database
+    try:
+        with get_db_cursor() as (db_type, cursor):
+            cursor.execute("UPDATE users SET student_name = '' WHERE student_name != ''")
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # 4. DATA ACCESS FUNCTIONS
@@ -358,19 +365,20 @@ def is_username_registered(username: str, exclude_telegram_id: Optional[int] = N
 
 
 def save_user(telegram_id: int, username: str, password: str, student_name: str = ""):
+    """Saves user credentials with Fernet encryption. Zero-Knowledge: student names are NEVER stored."""
     encrypted_pw = fernet.encrypt(password.encode("utf-8")).decode("utf-8")
     with get_db_cursor() as (db_type, cursor):
         ph = "%s" if db_type == "pg" else "?"
         query = f"""
             INSERT INTO users (telegram_id, username, encrypted_password, student_name, last_active)
-            VALUES ({ph}, {ph}, {ph}, {ph}, CURRENT_TIMESTAMP)
+            VALUES ({ph}, {ph}, {ph}, '', CURRENT_TIMESTAMP)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username = excluded.username,
                 encrypted_password = excluded.encrypted_password,
-                student_name = CASE WHEN excluded.student_name != '' THEN excluded.student_name ELSE users.student_name END,
+                student_name = '',
                 last_active = CURRENT_TIMESTAMP
         """
-        cursor.execute(query, (telegram_id, username.strip(), encrypted_pw, student_name.strip()))
+        cursor.execute(query, (telegram_id, username.strip(), encrypted_pw))
 
 
 def get_user(telegram_id: int) -> Optional[Tuple[str, str, str]]:
@@ -385,10 +393,10 @@ def get_user(telegram_id: int) -> Optional[Tuple[str, str, str]]:
     if not row:
         return None
 
-    username, enc_pw, name = row
+    username, enc_pw, _ = row
     try:
         decrypted_pw = fernet.decrypt(enc_pw.encode("utf-8")).decode("utf-8")
-        return username, decrypted_pw, name or ""
+        return username, decrypted_pw, ""
     except Exception as e:
         logger.error(f"Decryption failed for user {telegram_id}: {e}")
         return None
@@ -420,12 +428,8 @@ def delete_user_by_identifier(identifier: str) -> bool:
 
 
 def update_student_name(telegram_id: int, name: str):
-    with get_db_cursor() as (db_type, cursor):
-        ph = "%s" if db_type == "pg" else "?"
-        cursor.execute(
-            f"UPDATE users SET student_name = {ph}, last_active = CURRENT_TIMESTAMP WHERE telegram_id = {ph}",
-            (name.strip(), telegram_id)
-        )
+    """Zero-Knowledge: Student names are never saved to disk or database."""
+    pass
 
 
 def get_user_count() -> int:
@@ -436,25 +440,6 @@ def get_user_count() -> int:
         return row[0] if row else 0
 
 
-def get_all_users() -> list:
-    with get_db_cursor() as (db_type, cursor):
-        cursor.execute(
-            "SELECT telegram_id, username, student_name, created_at, last_active FROM users ORDER BY created_at DESC"
-        )
-        rows = cursor.fetchall()
-
-    result = []
-    for r in rows:
-        result.append({
-            "telegram_id": r[0],
-            "username": r[1],
-            "student_name": r[2] or "غير محدد",
-            "created_at": str(r[3]),
-            "last_active": str(r[4])
-        })
-    return result
-
-
 def get_all_telegram_ids() -> list:
     with get_db_cursor() as (db_type, cursor):
         cursor.execute("SELECT telegram_id FROM users")
@@ -463,26 +448,16 @@ def get_all_telegram_ids() -> list:
 
 
 def export_backup_data() -> Dict[str, Any]:
-    """Exports all encrypted user credentials and metadata for disaster recovery."""
+    """Returns aggregate database metrics without exposing any student identities or records."""
     with get_db_cursor() as (db_type, cursor):
-        cursor.execute("SELECT telegram_id, username, encrypted_password, student_name, created_at, last_active FROM users")
-        rows = cursor.fetchall()
-
-    users_dump = []
-    for r in rows:
-        users_dump.append({
-            "telegram_id": r[0],
-            "username": r[1],
-            "encrypted_password": r[2],
-            "student_name": r[3] or "",
-            "created_at": str(r[4]),
-            "last_active": str(r[5])
-        })
+        cursor.execute("SELECT COUNT(*) FROM users")
+        row = cursor.fetchone()
+        total = row[0] if row else 0
 
     return {
         "db_type": db_type,
-        "total_users": len(users_dump),
-        "users": users_dump
+        "total_users": total,
+        "users": []
     }
 
 

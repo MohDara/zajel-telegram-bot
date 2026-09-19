@@ -254,10 +254,8 @@ async def start_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     existing_user = db.get_user(user_id)
 
     if existing_user:
-        username, _, name = existing_user
-        display_name = name or username
         await update.message.reply_text(
-            f"أهلاً بك مجدداً يا {display_name}.\n\n"
+            "أهلاً بك مجدداً في بوت زاجل الجامعي.\n\n"
             "اختر الخدمة المطلوبة من القائمة أدناه:",
             reply_markup=MAIN_KEYBOARD
         )
@@ -674,40 +672,15 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     count = db.get_user_count()
     db_engine = "PostgreSQL (Cloud Database)" if db.DATABASE_URL else "SQLite (WAL Mode & Auto-Backup)"
-    backup_count, backup_latest = db.get_backup_summary()
-    backup_line = (
-        f"\n- Verified Backups: {backup_count} (latest: {backup_latest})"
-        if not db.DATABASE_URL else ""
-    )
 
     await update.message.reply_text(
-        f"Bot Status Report:\n"
+        f"Bot Status Report (Aggregate Only):\n"
         f"- Registered Students: {count}\n"
         f"- Active Sessions in Memory: {len(user_sessions)}\n"
-        f"- Storage Engine: {db_engine}{backup_line}\n"
-        f"- Server Time: {get_local_now().strftime('%Y-%m-%d %H:%M:%S')} (Palestine Time)"
+        f"- Storage Engine: {db_engine}\n"
+        f"- Server Time: {get_local_now().strftime('%Y-%m-%d %H:%M:%S')} (Palestine Time)\n"
+        f"- Privacy: Zero-Knowledge (No student names or personal records stored)"
     )
-
-
-async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
-        return
-
-    users = db.get_all_users()
-    if not users:
-        await update.message.reply_text("لا يوجد طلاب مسجلون حالياً.")
-        return
-
-    lines = [f"قائمة الطلاب المسجلين ({len(users)} طالب):\n"]
-    for idx, u in enumerate(users, 1):
-        reg_date = u["created_at"][:10] if u["created_at"] else "غير معروف"
-        lines.append(f"{idx}. {u['student_name']} (رقم: {u['username']})")
-        lines.append(f"   المعرف: {u['telegram_id']} | تاريخ التسجيل: {reg_date}\n")
-
-    text = "\n".join(lines).strip()
-    for chunk in formatter.split_message(text):
-        await update.message.reply_text(chunk)
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -775,79 +748,6 @@ async def clear_cache_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
-async def delete_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "يرجى تحديد المعرف أو الرقم الجامعي بعد الأمر.\n"
-            "مثال:\n"
-            "/delete_user 123456789"
-        )
-        return
-
-    ident = context.args[0].strip()
-    deleted = db.delete_user_by_identifier(ident)
-    if ident.isdigit() and int(ident) in user_sessions:
-        del user_sessions[int(ident)]
-
-    if deleted:
-        await update.message.reply_text(f"تم حذف المستخدم ({ident}) بنجاح من قاعدة البيانات.")
-    else:
-        await update.message.reply_text(f"لم يتم العثور على أي مستخدم بالمعرف أو الرقم ({ident}).")
-
-
-async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin-only disaster recovery command to export database snapshots to Telegram."""
-    user_id = update.effective_user.id
-    if ADMIN_USER_ID == 0 or user_id != ADMIN_USER_ID:
-        return
-
-    await update.effective_chat.send_action(ChatAction.UPLOAD_DOCUMENT)
-    now_local = get_local_now()
-    now_str = now_local.strftime("%Y%m%d_%H%M%S")
-
-    try:
-        if db.DATABASE_URL:
-            # Export encrypted JSON dump for PostgreSQL
-            backup_data = db.export_backup_data()
-            json_bytes = json.dumps(backup_data, ensure_ascii=False, indent=2).encode("utf-8")
-            bio = io.BytesIO(json_bytes)
-            bio.name = f"zajel_backup_pg_{now_str}.json"
-            await update.message.reply_document(
-                document=bio,
-                filename=f"zajel_backup_pg_{now_str}.json",
-                caption=(
-                    f"نسخة احتياطية مشفرة (PostgreSQL)\n"
-                    f"إجمالي الطلاب: {backup_data['total_users']}\n"
-                    f"التاريخ: {now_local.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"تنبيه: لا يمكن فك التشفير بدون مفتاح APP_SECRET_KEY الأصلي."
-                )
-            )
-        else:
-            # Export atomic SQLite backup
-            backup_path = db.backup_sqlite_db() or db.DB_PATH
-            if os.path.exists(backup_path):
-                with open(backup_path, "rb") as doc:
-                    await update.message.reply_document(
-                        document=doc,
-                        filename=f"zajel_users_{now_str}.db",
-                        caption=(
-                            f"نسخة احتياطية آمنة وموثقة (SQLite WAL)\n"
-                            f"إجمالي الطلاب: {db.get_user_count()}\n"
-                            f"التاريخ: {now_local.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                            f"تنبيه: احتفظ بنسخة من مفتاح APP_SECRET_KEY لفك التشفير عند الاستعادة."
-                        )
-                    )
-            else:
-                await update.message.reply_text("تعذر العثور على ملف قاعدة البيانات لإنشاء النسخة الاحتياطية.")
-    except Exception as e:
-        logger.error(f"Error in backup_command: {e}\n{traceback.format_exc()}")
-        await update.message.reply_text(f"حدث خطأ أثناء إنشاء النسخة الاحتياطية: {e}")
-
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global unhandled error handler"""
     err_str = str(context.error) if context.error else ""
@@ -869,13 +769,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = formatter.format_help()
     if ADMIN_USER_ID > 0 and user_id == ADMIN_USER_ID:
         admin_tools = (
-            "\n\nأوامر المشرف الخاصة:\n"
-            "/status - تقرير حالة الخادم وعدد الطلاب\n"
-            "/users - قائمة الطلاب المسجلين في البوت\n"
-            "/backup - تحميل نسخة احتياطية فورية لقاعدة البيانات\n"
-            "/delete_user <id> - حذف حساب مستخدم نهائياً\n"
+            "\n\nأوامر المشرف الخاصة (إحصائية فقط):\n"
+            "/status - تقرير حالة الخادم والعدد الإجمالي للطلاب\n"
             "/broadcast <رسالة> - إرسال إشعار جماعي لكافة الطلاب\n"
-            "/clear_cache - تفريغ الذاكرة المؤقتة بالكامل\n"
+            "/clear_cache - تفريغ الذاكرة المؤقتة\n"
             "/logs - عرض آخر الأخطاء المسجلة\n"
             "/logfile - تحميل ملف السجل كملف مستند"
         )
@@ -938,13 +835,10 @@ def main():
     app.add_handler(CommandHandler("logout", logout_command))
     app.add_handler(CommandHandler("help", help_command))
 
-    # Admin Command handlers
+    # Admin Command handlers (Aggregate telemetry and broadcast only)
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("logfile", logfile_command))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("users", users_command))
-    app.add_handler(CommandHandler("backup", backup_command))
-    app.add_handler(CommandHandler("delete_user", delete_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("clear_cache", clear_cache_command))
 
