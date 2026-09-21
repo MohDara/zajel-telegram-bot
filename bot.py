@@ -228,14 +228,14 @@ async def get_cached_data(telegram_id: int, force_refresh: bool = False):
     session = user_sessions.get(telegram_id, {})
     now = datetime.now().timestamp()
 
-    if not force_refresh and session.get("courses") and (now - session.get("timestamp", 0) < CACHE_TTL):
+    if not force_refresh and (session.get("courses") is not None) and (now - session.get("timestamp", 0) < CACHE_TTL):
         return session.get("profile"), session.get("semester", ""), session.get("courses")
 
     # Run blocking HTTP scraping in thread pool
     profile = await asyncio.to_thread(client.get_student_profile)
     sem_name, courses = await asyncio.to_thread(client.get_schedule)
 
-    if courses:
+    if courses is not None:
         session["courses"] = courses
         session["semester"] = sem_name
         session["profile"] = profile
@@ -409,8 +409,12 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         profile, _, courses = await get_cached_data(user_id)
-        if not courses:
+        if courses is None:
             await update.message.reply_text("تعذر جلب الجدول من زاجل. يرجى المحاولة لاحقاً.")
+            return
+
+        if len(courses) == 0:
+            await update.message.reply_text("لا توجد مساقات مسجلة حالياً لهذا الفصل.", reply_markup=MAIN_KEYBOARD)
             return
 
         client = get_user_client(user_id)
@@ -437,8 +441,12 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         profile, sem_name, courses = await get_cached_data(user_id)
-        if not courses:
+        if courses is None:
             await update.message.reply_text("تعذر جلب البرنامج الدراسي من زاجل.")
+            return
+
+        if len(courses) == 0:
+            await update.message.reply_text(f"لا توجد مساقات مسجلة حالياً لفصل ({sem_name}).", reply_markup=MAIN_KEYBOARD)
             return
 
         student_name = profile.name if profile else "عزيزي الطالب"
@@ -511,8 +519,12 @@ async def absences_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         _, _, courses = await get_cached_data(user_id)
-        if not courses:
+        if courses is None:
             await update.message.reply_text("تعذر جلب سجل الغيابات من زاجل.")
+            return
+
+        if len(courses) == 0:
+            await update.message.reply_text("لا توجد مساقات مسجلة حالياً لعرض الغيابات.", reply_markup=MAIN_KEYBOARD)
             return
 
         text = formatter.format_absences(courses)
@@ -604,12 +616,19 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_sessions[user_id]["transcript_time"] = 0
 
         profile, sem_name, courses = await get_cached_data(user_id, force_refresh=True)
-        if courses:
-            await msg.edit_text(
-                f"تم تحديث البيانات بنجاح.\n"
-                f"تم تحميل {len(courses)} مساقات لفصل ({sem_name}).\n"
-                "تم تجديد كشف العلامات والغيابات مباشرة من خادم زاجل."
-            )
+        if courses is not None:
+            if courses:
+                await msg.edit_text(
+                    f"تم تحديث البيانات بنجاح.\n"
+                    f"تم تحميل {len(courses)} مساقات لفصل ({sem_name}).\n"
+                    "تم تجديد كشف العلامات والغيابات مباشرة من خادم زاجل."
+                )
+            else:
+                await msg.edit_text(
+                    f"تم تحديث البيانات بنجاح.\n"
+                    f"لا توجد مساقات مسجلة لفصل ({sem_name}).\n"
+                    "تم تجديد كشف العلامات والغيابات مباشرة من خادم زاجل."
+                )
         else:
             await msg.edit_text("تعذر تحديث البيانات من زاجل حالياً. يرجى المحاولة لاحقاً.")
     except Exception as e:

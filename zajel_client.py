@@ -181,22 +181,31 @@ class ZajelClient:
             html4 = resp4.content.decode('windows-1256', errors='replace')
             soup4 = BeautifulSoup(html4, 'html.parser')
             form4 = soup4.find('form')
-            if not form4 or not form4.get('action'):
-                return False
 
-            action4 = form4.get('action', '')
-            if 'mainn' not in action4.lower():
-                return False
+            # Step 5: Follow forward form if present (mainN or interstitial page like StuParDataStart)
+            if form4 and form4.get('action'):
+                action4 = form4.get('action', '')
+                url5 = urljoin(resp4.url, action4)
+                resp5 = self.session.post(url5, timeout=15)
+                html5 = resp5.content.decode('windows-1256', errors='replace')
+            else:
+                resp5 = self.session.post(urljoin(self.BASE_SERVLET_URL, 'mainN'), timeout=15)
+                html5 = resp5.content.decode('windows-1256', errors='replace')
 
-            url5 = urljoin(resp4.url, action4)
+            if resp5.status_code == 200 and not ('WhitePage' in html5 or 'غير صحيحة' in html5):
+                if any(marker in html5 for marker in ('start', 'ZajSSChk', 'mainfont', 'headerfont', 'headfont', 'datafont')):
+                    self.is_logged_in = True
+                    self._last_login_time = time.time()
+                    return True
 
-            # Step 5: Complete login into mainN
-            resp5 = self.session.post(url5, timeout=15)
-            html5 = resp5.content.decode('windows-1256', errors='replace')
-            if resp5.status_code == 200 and ('start' in html5 or 'ZajSSChk' in html5 or 'mainfont' in html5):
+            # Fallback verification: test if start/main page is accessible
+            resp_check = self.session.get(urljoin(self.BASE_SERVLET_URL, 'start'), timeout=15)
+            html_check = resp_check.content.decode('windows-1256', errors='replace')
+            if resp_check.status_code == 200 and 'WhitePage' not in html_check and 'يرجى تسجيل الدخول' not in html_check:
                 self.is_logged_in = True
                 self._last_login_time = time.time()
                 return True
+
             return False
         except Exception as e:
             print(f'[ZajelClient] Login error: {e}')
@@ -296,10 +305,10 @@ class ZajelClient:
                 options.append((val, text))
         return options
 
-    def get_schedule(self, cou: Optional[str] = None) -> Tuple[str, List[Course]]:
+    def get_schedule(self, cou: Optional[str] = None) -> Tuple[str, Optional[List[Course]]]:
         semesters = self.get_semesters()
         if not semesters:
-            return '', []
+            return '', None
 
         if not cou:
             cou, semester_name = semesters[0]
@@ -308,13 +317,20 @@ class ZajelClient:
 
         soup = self._post_with_retry('program', data={'cou': cou})
         if not soup:
-            return semester_name, []
+            return semester_name, None
 
         tables = soup.find_all('table')
-        if len(tables) < 3:
+        target_table = None
+        for t in tables:
+            txt = t.get_text()
+            if 'رقم المساق' in txt and ('اسم المساق' in txt or 'الأيام' in txt):
+                target_table = t
+                break
+
+        if not target_table:
             return semester_name, []
 
-        table = tables[2]
+        table = target_table
         rows = table.find_all('tr')
         courses: List[Course] = []
         current_course: Optional[Course] = None
@@ -400,7 +416,8 @@ class ZajelClient:
         today_name = DAY_MAP.get(day_key, 'اليوم')
 
         if courses is None:
-            _, courses = self.get_schedule()
+            _, fetched_courses = self.get_schedule()
+            courses = fetched_courses or []
 
         today_items: List[Tuple[Course, TimeSlot]] = []
         for course in courses:
@@ -474,7 +491,7 @@ class ZajelClient:
             return None
 
         tables = soup.find_all('table')
-        if len(tables) < 4:
+        if not tables:
             return None
 
         # Parse overview metadata
@@ -494,7 +511,7 @@ class ZajelClient:
             except Exception:
                 pass
 
-        # Locate transcript table (Table 3)
+        # Locate transcript table
         target_table = None
         for t in tables:
             txt = t.get_text()
@@ -503,7 +520,16 @@ class ZajelClient:
                 break
 
         if not target_table:
-            return None
+            return Transcript(
+                student_id=student_id,
+                student_name=student_name,
+                major=major,
+                faculty=faculty,
+                cumulative_gpa=cumulative_gpa,
+                rating=rating,
+                completed_credits=completed_credits,
+                semesters=[]
+            )
 
         semesters: List[SemesterRecord] = []
         current_sem: Optional[SemesterRecord] = None
