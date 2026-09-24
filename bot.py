@@ -187,42 +187,17 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("محاضرات اليوم"), KeyboardButton("البرنامج الأسبوعي")],
         [KeyboardButton("كشف العلامات"), KeyboardButton("سجل الغيابات")],
-        [KeyboardButton("الرسائل الهامة"), KeyboardButton("بوابة مودل Moodle")],
-        [KeyboardButton("تحديث البيانات"), KeyboardButton("تسجيل الخروج")]
+        [KeyboardButton("الرسائل الهامة"), KeyboardButton("الواجبات والمشاريع 📝")],
+        [KeyboardButton("بوابة مودل Moodle"), KeyboardButton("تحديث البيانات")],
+        [KeyboardButton("تسجيل الخروج")]
     ],
     resize_keyboard=True,
     is_persistent=True
 )
 
 
-def is_tester_or_admin(user_id: int) -> bool:
-    """Checks if the user is authorized to test experimental features (Moodle activities & projects)."""
-    if ADMIN_USER_ID > 0 and user_id == ADMIN_USER_ID:
-        return True
-    if user_id == 5474706821:
-        return True
-    tester_env = os.getenv("TESTER_USER_IDS", "").strip()
-    if tester_env:
-        tester_ids = [int(x.strip()) for x in tester_env.split(",") if x.strip().isdigit()]
-        if user_id in tester_ids:
-            return True
-    return False
-
-
-def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
-    """Returns main menu keyboard, including experimental projects button for tester/admin."""
-    if is_tester_or_admin(user_id):
-        return ReplyKeyboardMarkup(
-            [
-                [KeyboardButton("محاضرات اليوم"), KeyboardButton("البرنامج الأسبوعي")],
-                [KeyboardButton("كشف العلامات"), KeyboardButton("سجل الغيابات")],
-                [KeyboardButton("الرسائل الهامة"), KeyboardButton("الواجبات والمشاريع 📝")],
-                [KeyboardButton("بوابة مودل Moodle"), KeyboardButton("تحديث البيانات")],
-                [KeyboardButton("تسجيل الخروج")]
-            ],
-            resize_keyboard=True,
-            is_persistent=True
-        )
+def get_main_keyboard(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
+    """Returns main menu keyboard for all students."""
     return MAIN_KEYBOARD
 
 
@@ -610,8 +585,7 @@ async def moodle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             buttons.append([InlineKeyboardButton("فتح موقع مودل", url="https://moodle.najah.edu")])
 
-        if is_tester_or_admin(user_id):
-            buttons.append([InlineKeyboardButton("عرض الواجبات والمشاريع المستحقة 📝", callback_data="view_activities")])
+        buttons.append([InlineKeyboardButton("عرض الواجبات والمشاريع المستحقة 📝", callback_data="view_activities")])
 
         keyboard = InlineKeyboardMarkup(buttons)
         await update.message.reply_text(
@@ -630,12 +604,6 @@ async def activities_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     user_id = update.effective_user.id
-    if not is_tester_or_admin(user_id):
-        target_msg = update.effective_message
-        if target_msg:
-            await target_msg.reply_text("عذراً، ميزة استعراض الواجبات والمشاريع قيد التجربة حالياً ومتاحة للمشرف فقط.")
-        return
-
     limited, limit_msg = check_rate_limit(user_id)
     if limited:
         if update.effective_message:
@@ -674,12 +642,12 @@ async def activities_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         # Build inline buttons: SSO quick login + actionable item links
         inline_buttons = []
-        if sso_url:
+        if sso_url and sso_url.startswith(("http://", "https://")):
             inline_buttons.append([InlineKeyboardButton("🔑 تسجيل الدخول السريع لمودل (SSO)", url=sso_url)])
 
         for act in activities[:5]:
             btn_url = act.action_url or act.url
-            if btn_url:
+            if btn_url and btn_url.startswith(("http://", "https://")):
                 short_title = act.name[:28] + ("..." if len(act.name) > 28 else "")
                 inline_buttons.append([InlineKeyboardButton(f"تسليم: {short_title}", url=btn_url)])
 
@@ -897,10 +865,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = formatter.format_help()
-    if is_tester_or_admin(user_id):
+    if ADMIN_USER_ID > 0 and user_id == ADMIN_USER_ID:
         admin_tools = (
-            "\n\nأدوات التجربة والإدارة:\n"
-            "/assignments - استعراض المشاريع والواجبات المستحقة من مودل (خاص بالمشرف)\n"
+            "\n\nأوامر المشرف الخاصة (إحصائية فقط):\n"
             "/status - تقرير حالة الخادم والعدد الإجمالي للطلاب\n"
             "/broadcast <رسالة> - إرسال إشعار جماعي لكافة الطلاب\n"
             "/clear_cache - تفريغ الذاكرة المؤقتة\n"

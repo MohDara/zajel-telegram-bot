@@ -198,17 +198,32 @@ assert "Assignment #1" in act_text
 assert "واجب (Assignment)" in act_text
 assert "الرابط:" in act_text
 
-# 11c. Test is_tester_or_admin gating from bot
+# 11c. Test main keyboard includes projects button for all students
 import bot
-assert bot.is_tester_or_admin(5474706821) is True
-assert bot.is_tester_or_admin(111222333) is False
+kb_any = bot.get_main_keyboard(111222333)
+all_buttons = [btn.text for row in kb_any.keyboard for btn in row]
+assert "الواجبات والمشاريع 📝" in all_buttons, "Projects button must be present on main keyboard for all users!"
+assert "/assignments" in formatter.format_help(), "/assignments must be present in public student help!"
 
-# 11d. Live Moodle query verification
+# 11d. Test HTML unescaping and URL normalization
+import html
+from urllib.parse import urljoin
+raw_title = "Operating Systems &amp; Labs &quot;Project 1&quot; is due"
+clean = html.unescape(raw_title).replace(" is due", "").strip()
+assert clean == 'Operating Systems & Labs "Project 1"'
+rel_action = "/mod/assign/view.php?id=999"
+abs_action = urljoin("https://moodle.najah.edu", rel_action)
+assert abs_action == "https://moodle.najah.edu/mod/assign/view.php?id=999"
+
+# 11e. Live Moodle query verification
 if 'client' in locals():
     live_activities = client.get_upcoming_activities()
     print(f"Test 11 Passed: Live Moodle deliverables extracted ({len(live_activities)} assignments/projects):")
     for a in live_activities:
         print(f"  - [{a.course_name}] {a.name} (Due: {a.formatted_due_date} | {a.time_remaining_str})")
+        assert a.url.startswith("http"), f"Activity URL must be absolute HTTP/HTTPS: {a.url}"
+        if a.action_url:
+            assert a.action_url.startswith("http"), f"Action URL must be absolute HTTP/HTTPS: {a.action_url}"
         # Ensure zero lecture leaks
         c_low = a.component.lower()
         t_low = a.name.lower()

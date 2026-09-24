@@ -1,3 +1,4 @@
+import html
 import os
 import re
 import sys
@@ -128,7 +129,7 @@ def format_activity_due_date(ts: int) -> Tuple[str, str]:
     2. time_remaining_str (e.g. 'متبقي 11 يوماً' or 'متبقي 4 ساعات')
     Uses Palestine timezone (Asia/Jerusalem).
     """
-    if not ts:
+    if not ts or ts <= 0:
         return "", ""
     tz_name = os.getenv("TIMEZONE", "Asia/Jerusalem")
     try:
@@ -136,8 +137,11 @@ def format_activity_due_date(ts: int) -> Tuple[str, str]:
     except Exception:
         tz = timezone(timedelta(hours=3))
 
-    due_dt = datetime.fromtimestamp(ts, tz)
-    now_dt = get_local_now()
+    try:
+        due_dt = datetime.fromtimestamp(ts, tz)
+        now_dt = get_local_now()
+    except Exception:
+        return "", ""
 
     day_name = ARABIC_WEEKDAYS.get(due_dt.weekday(), "")
     hour_12 = due_dt.hour % 12
@@ -710,6 +714,12 @@ class ZajelClient:
             activities: List[UpcomingActivity] = []
             seen_ids = set()
 
+            deliverable_comps = {
+                'mod_assign', 'mod_quiz', 'mod_workshop', 'mod_vpl',
+                'mod_turnitintooltwo', 'mod_turnitintool'
+            }
+            deliverable_mods = {'assign', 'quiz', 'workshop', 'vpl', 'turnitintooltwo', 'turnitintool'}
+
             def is_lecture(comp: str, mod: str, etype: str, title: str, url: str, purpose: str) -> bool:
                 c_low = (comp or '').lower()
                 m_low = (mod or '').lower()
@@ -717,7 +727,7 @@ class ZajelClient:
                 u_low = (url or '').lower()
                 p_low = (purpose or '').lower()
 
-                # 1. Non-deliverable components/modules to drop
+                # 1. Non-deliverable components/modules to drop unconditionally
                 lecture_comps = {
                     'mod_zoom', 'mod_bigbluebuttonbn', 'mod_attendance', 'mod_teams',
                     'mod_collaborate', 'mod_meeting', 'mod_forum', 'mod_chat', 'mod_url',
@@ -730,24 +740,30 @@ class ZajelClient:
                 }:
                     return True
 
-                # 2. Meeting domains in URLs
+                # 2. Direct meeting domains in URLs
                 meeting_domains = ['zoom.us', 'teams.microsoft.com', 'meet.google.com', 'webex.com']
                 if any(dom in u_low for dom in meeting_domains):
                     return True
 
-                # 3. Meeting / lecture regex in title, url, or component
-                lecture_patterns = [
+                # 3. Purpose check: if explicit purpose given and not assessment, drop
+                if p_low and p_low not in {'assessment'}:
+                    return True
+
+                # 4. If component is a whitelisted deliverable (like mod_assign / mod_quiz):
+                if c_low in deliverable_comps or m_low in deliverable_mods:
+                    if re.search(r'\b(zoom|teams|meet|webex)\b', t_low) and not re.search(r'(homework|project|assignment|submission|واجب|مشروع|تسليم)', t_low):
+                        return True
+                    return False
+
+                # 5. For raw calendar events (comp is not an assessment module):
+                raw_lecture_patterns = [
                     r'zoom', r'teams', r'meet', r'webex', r'lecture', r'class', r'session',
                     r'office\s*hour', r'محاضر[ةه]?', r'جلس[ةه]', r'لقاء', r'شعب[ةه]',
                     r'حضور', r'غياب', r'ساع[ةه]\s*مكتبي[ةه]', r'تفاعلي', r'تعويضي[ةه]', r'رابط'
                 ]
-                for pat in lecture_patterns:
+                for pat in raw_lecture_patterns:
                     if re.search(pat, t_low) or re.search(pat, u_low):
                         return True
-
-                # 4. Purpose check: if explicit purpose given and not assessment, drop
-                if p_low and p_low not in {'assessment'}:
-                    return True
 
                 return False
 
@@ -758,18 +774,12 @@ class ZajelClient:
                 p_low = (purpose or '').lower()
 
                 # Whitelisted deliverable components
-                deliverable_comps = {
-                    'mod_assign', 'mod_quiz', 'mod_workshop', 'mod_vpl',
-                    'mod_turnitintooltwo', 'mod_turnitintool'
-                }
-                if c_low in deliverable_comps or m_low in {
-                    'assign', 'quiz', 'workshop', 'vpl', 'turnitintooltwo', 'turnitintool'
-                }:
+                if c_low in deliverable_comps or m_low in deliverable_mods:
                     return True
                 if p_low == 'assessment':
                     return True
 
-                # Explicit deliverable keywords in title
+                # Explicit deliverable keywords in title for raw calendar events
                 deliverable_patterns = [
                     r'واجب', r'مشروع', r'تسليم', r'تقرير', r'هومورك', r'كويز', r'امتحان', r'اختبار',
                     r'homework', r'project', r'assignment', r'submission', r'quiz', r'exam', r'report', r'phase'
@@ -822,25 +832,43 @@ class ZajelClient:
                             continue
                         seen_ids.add(eid)
 
-                        comp = ev.get('component', '')
-                        mod = ev.get('modulename', '')
-                        etype = ev.get('eventtype', '')
-                        name = ev.get('name', '')
+                        comp = ev.get('component', '') or ''
+                        mod = ev.get('modulename', '') or ''
+                        etype = ev.get('eventtype', '') or ''
+                        name = ev.get('name', '') or ''
                         act_name = ev.get('activityname') or name
-                        ev_url = ev.get('url', '')
-                        purpose = ev.get('purpose', '')
+                        ev_url = ev.get('url', '') or ''
+                        purpose = ev.get('purpose', '') or ''
 
                         if is_lecture(comp, mod, etype, act_name, ev_url, purpose):
                             continue
                         if not is_deliverable(comp, mod, act_name, purpose):
                             continue
 
-                        clean_name = re.sub(r'\s+is due$', '', act_name, flags=re.IGNORECASE).strip()
-                        course_fullname = ev.get('course', {}).get('fullname', '')
-                        due_ts = ev.get('timesort') or ev.get('timestart', 0)
+                        clean_name = html.unescape(act_name)
+                        clean_name = re.sub(r'(\s+is due|\s+مستحق[ةه]?)$', '', clean_name, flags=re.IGNORECASE).strip()
+                        course_fullname = html.unescape(ev.get('course', {}).get('fullname', '') or '')
+                        try:
+                            due_ts = int(ev.get('timesort') or ev.get('timestart', 0) or 0)
+                        except (ValueError, TypeError):
+                            due_ts = 0
 
                         f_date, rem_str = format_activity_due_date(due_ts)
                         action_dict = ev.get('action') or {}
+
+                        clean_action_url = action_dict.get('url', '') or ''
+                        if clean_action_url:
+                            if not clean_action_url.startswith(('http://', 'https://')):
+                                clean_action_url = urljoin('https://moodle.najah.edu', clean_action_url)
+                            if not clean_action_url.startswith(('http://', 'https://')):
+                                clean_action_url = ''
+
+                        clean_ev_url = ev_url or ''
+                        if clean_ev_url:
+                            if not clean_ev_url.startswith(('http://', 'https://')):
+                                clean_ev_url = urljoin('https://moodle.najah.edu', clean_ev_url)
+                            if not clean_ev_url.startswith(('http://', 'https://')):
+                                clean_ev_url = ''
 
                         activities.append(UpcomingActivity(
                             activity_id=eid,
@@ -853,9 +881,9 @@ class ZajelClient:
                             due_timestamp=due_ts,
                             formatted_due_date=f_date,
                             time_remaining_str=rem_str,
-                            url=ev_url,
-                            action_name=action_dict.get('name', ''),
-                            action_url=action_dict.get('url', ''),
+                            url=clean_ev_url,
+                            action_name=action_dict.get('name', '') or '',
+                            action_url=clean_action_url,
                             is_actionable=action_dict.get('actionable', True)
                         ))
 
@@ -875,12 +903,16 @@ class ZajelClient:
                         continue
                     seen_ids.add(eid)
 
-                    comp = ev_node.get('data-event-component', '')
-                    etype = ev_node.get('data-event-eventtype', '')
+                    comp = ev_node.get('data-event-component', '') or ''
+                    etype = ev_node.get('data-event-eventtype', '') or ''
                     title = ev_node.get('data-event-title') or (ev_node.select_one('.name').get_text(strip=True) if ev_node.select_one('.name') else '')
 
                     card_link = ev_node.select_one('a.card-link') or ev_node.find('a', href=lambda h: h and 'mod/' in h)
                     link = card_link.get('href') if card_link else ''
+                    if link and not link.startswith(('http://', 'https://')):
+                        link = urljoin('https://moodle.najah.edu', link)
+                    if link and not link.startswith(('http://', 'https://')):
+                        link = ''
 
                     if is_lecture(comp, '', etype, title, link, ''):
                         continue
@@ -897,13 +929,14 @@ class ZajelClient:
                     date_spans = ev_node.select('span.date')
                     date_str = " ".join([sp.get_text(strip=True) for sp in date_spans]) if date_spans else ""
 
-                    clean_name = re.sub(r'\s+is due$', '', title, flags=re.IGNORECASE).strip()
+                    clean_name = html.unescape(title)
+                    clean_name = re.sub(r'(\s+is due|\s+مستحق[ةه]?)$', '', clean_name, flags=re.IGNORECASE).strip()
 
                     activities.append(UpcomingActivity(
                         activity_id=eid,
                         name=clean_name,
                         activity_name=title,
-                        course_name=course_name,
+                        course_name=html.unescape(course_name),
                         component=comp,
                         modulename='',
                         event_type=etype,
@@ -922,3 +955,8 @@ class ZajelClient:
         except Exception as e:
             print(f"[ZajelClient] Error querying Moodle activities: {e}")
             return []
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
