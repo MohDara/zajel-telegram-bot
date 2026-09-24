@@ -33,6 +33,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ConversationHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -194,6 +195,37 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 
+def is_tester_or_admin(user_id: int) -> bool:
+    """Checks if the user is authorized to test experimental features (Moodle activities & projects)."""
+    if ADMIN_USER_ID > 0 and user_id == ADMIN_USER_ID:
+        return True
+    if user_id == 5474706821:
+        return True
+    tester_env = os.getenv("TESTER_USER_IDS", "").strip()
+    if tester_env:
+        tester_ids = [int(x.strip()) for x in tester_env.split(",") if x.strip().isdigit()]
+        if user_id in tester_ids:
+            return True
+    return False
+
+
+def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    """Returns main menu keyboard, including experimental projects button for tester/admin."""
+    if is_tester_or_admin(user_id):
+        return ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("محاضرات اليوم"), KeyboardButton("البرنامج الأسبوعي")],
+                [KeyboardButton("كشف العلامات"), KeyboardButton("سجل الغيابات")],
+                [KeyboardButton("الرسائل الهامة"), KeyboardButton("الواجبات والمشاريع 📝")],
+                [KeyboardButton("بوابة مودل Moodle"), KeyboardButton("تحديث البيانات")],
+                [KeyboardButton("تسجيل الخروج")]
+            ],
+            resize_keyboard=True,
+            is_persistent=True
+        )
+    return MAIN_KEYBOARD
+
+
 def get_user_client(telegram_id: int) -> Optional[ZajelClient]:
     user = db.get_user(telegram_id)
     if not user:
@@ -257,7 +289,7 @@ async def start_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await update.message.reply_text(
             "أهلاً بك مجدداً في بوت زاجل الجامعي.\n\n"
             "اختر الخدمة المطلوبة من القائمة أدناه:",
-            reply_markup=MAIN_KEYBOARD
+            reply_markup=get_main_keyboard(user_id)
         )
         return ConversationHandler.END
 
@@ -368,7 +400,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
     await update.message.reply_text(
         "القائمة الرئيسية:",
-        reply_markup=MAIN_KEYBOARD
+        reply_markup=get_main_keyboard(user_id)
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -414,14 +446,14 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if len(courses) == 0:
-            await update.message.reply_text("لا توجد مساقات مسجلة حالياً لهذا الفصل.", reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text("لا توجد مساقات مسجلة حالياً لهذا الفصل.", reply_markup=get_main_keyboard(user_id))
             return
 
         client = get_user_client(user_id)
         student_name = profile.name if profile else "عزيزي الطالب"
         day_name, items = await asyncio.to_thread(client.get_today_classes, courses)
         text = formatter.format_today_classes(student_name, day_name, items)
-        await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(text, reply_markup=get_main_keyboard(user_id))
     except Exception as e:
         logger.error(f"Error in today_command for user {user_id}: {e}\n{traceback.format_exc()}")
         await update.message.reply_text("حدث خطأ أثناء جلب محاضرات اليوم.")
@@ -446,14 +478,14 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if len(courses) == 0:
-            await update.message.reply_text(f"لا توجد مساقات مسجلة حالياً لفصل ({sem_name}).", reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text(f"لا توجد مساقات مسجلة حالياً لفصل ({sem_name}).", reply_markup=get_main_keyboard(user_id))
             return
 
         student_name = profile.name if profile else "عزيزي الطالب"
         text = formatter.format_full_schedule(student_name, sem_name, courses)
         chunks = formatter.split_message(text)
         for chunk in chunks:
-            await update.message.reply_text(chunk, reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text(chunk, reply_markup=get_main_keyboard(user_id))
     except Exception as e:
         logger.error(f"Error in schedule_command for user {user_id}: {e}\n{traceback.format_exc()}")
         await update.message.reply_text("حدث خطأ أثناء جلب البرنامج الدراسي.")
@@ -495,7 +527,7 @@ async def grades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = formatter.format_transcript(transcript)
         chunks = formatter.split_message(text)
         for chunk in chunks:
-            await update.message.reply_text(chunk, reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text(chunk, reply_markup=get_main_keyboard(user_id))
     except Exception as e:
         logger.error(f"Error in grades_command for user {user_id}: {e}\n{traceback.format_exc()}")
         await update.message.reply_text("حدث خطأ أثناء جلب كشف العلامات.")
@@ -524,11 +556,11 @@ async def absences_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if len(courses) == 0:
-            await update.message.reply_text("لا توجد مساقات مسجلة حالياً لعرض الغيابات.", reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text("لا توجد مساقات مسجلة حالياً لعرض الغيابات.", reply_markup=get_main_keyboard(user_id))
             return
 
         text = formatter.format_absences(courses)
-        await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(text, reply_markup=get_main_keyboard(user_id))
     except Exception as e:
         logger.error(f"Error in absences_command for user {user_id}: {e}\n{traceback.format_exc()}")
         await update.message.reply_text("حدث خطأ أثناء جلب سجل الغيابات.")
@@ -550,7 +582,7 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = get_user_client(user_id)
         messages = await asyncio.to_thread(client.get_important_messages)
         text = formatter.format_messages(messages)
-        await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(text, reply_markup=get_main_keyboard(user_id))
     except Exception as e:
         logger.error(f"Error in messages_command for user {user_id}: {e}\n{traceback.format_exc()}")
         await update.message.reply_text("حدث خطأ أثناء جلب الرسائل الهامة.")
@@ -572,27 +604,103 @@ async def moodle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = get_user_client(user_id)
         sso_url = await asyncio.to_thread(client.get_moodle_sso_url)
 
+        buttons = []
         if sso_url:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("الانتقال المباشر إلى مودل", url=sso_url)]
-            ])
-            await update.message.reply_text(
-                "بوابة التعليم الإلكتروني (Moodle)\n\n"
-                "تم إنشاء رابط دخول آمن لحسابك. اضغط على الزر أدناه للدخول مباشرة:",
-                reply_markup=keyboard
-            )
+            buttons.append([InlineKeyboardButton("الانتقال المباشر إلى مودل (SSO)", url=sso_url)])
         else:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("فتح موقع مودل", url="https://moodle.najah.edu")]
-            ])
-            await update.message.reply_text(
-                "بوابة التعليم الإلكتروني (Moodle)\n\n"
-                "يمكنك فتح مودل من الزر أدناه:",
-                reply_markup=keyboard
-            )
+            buttons.append([InlineKeyboardButton("فتح موقع مودل", url="https://moodle.najah.edu")])
+
+        if is_tester_or_admin(user_id):
+            buttons.append([InlineKeyboardButton("عرض الواجبات والمشاريع المستحقة 📝", callback_data="view_activities")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
+        await update.message.reply_text(
+            "بوابة التعليم الإلكتروني (Moodle)\n\n"
+            "يمكنك الدخول إلى مودل أو استعراض الواجبات عبر الخيارات أدناه:",
+            reply_markup=keyboard
+        )
     except Exception as e:
         logger.error(f"Error in moodle_command for user {user_id}: {e}\n{traceback.format_exc()}")
         await update.message.reply_text("حدث خطأ أثناء جلب رابط مودل.")
+
+
+async def activities_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fetches upcoming due activities (assignments, quizzes) from Moodle, ignoring lectures."""
+    if not await check_user_logged_in(update):
+        return
+
+    user_id = update.effective_user.id
+    if not is_tester_or_admin(user_id):
+        target_msg = update.effective_message
+        if target_msg:
+            await target_msg.reply_text("عذراً، ميزة استعراض الواجبات والمشاريع قيد التجربة حالياً ومتاحة للمشرف فقط.")
+        return
+
+    limited, limit_msg = check_rate_limit(user_id)
+    if limited:
+        if update.effective_message:
+            await update.effective_message.reply_text(limit_msg)
+        return
+
+    await update.effective_chat.send_action(ChatAction.TYPING)
+    status_msg = await update.effective_message.reply_text("جاري جلب الواجبات والمشاريع المستحقة من مودل...")
+
+    try:
+        client = get_user_client(user_id)
+        if not client:
+            await status_msg.edit_text("تعذر الاتصال بحسابك في زاجل ومودل.")
+            return
+
+        session = user_sessions.get(user_id, {})
+        now = datetime.now().timestamp()
+
+        # Check in-memory cache (TTL = 300s)
+        if session.get("activities") is not None and (now - session.get("activities_time", 0) < CACHE_TTL):
+            activities = session["activities"]
+        else:
+            activities = await asyncio.to_thread(client.get_upcoming_activities)
+            session["activities"] = activities
+            session["activities_time"] = now
+
+        profile = session.get("profile")
+        if not profile:
+            profile = await asyncio.to_thread(client.get_student_profile)
+            session["profile"] = profile
+
+        student_name = profile.name if profile and profile.name else "عزيزي الطالب"
+        text = formatter.format_upcoming_activities(student_name, activities)
+
+        sso_url = await asyncio.to_thread(client.get_moodle_sso_url)
+
+        # Build inline buttons: SSO quick login + actionable item links
+        inline_buttons = []
+        if sso_url:
+            inline_buttons.append([InlineKeyboardButton("🔑 تسجيل الدخول السريع لمودل (SSO)", url=sso_url)])
+
+        for act in activities[:5]:
+            btn_url = act.action_url or act.url
+            if btn_url:
+                short_title = act.name[:28] + ("..." if len(act.name) > 28 else "")
+                inline_buttons.append([InlineKeyboardButton(f"تسليم: {short_title}", url=btn_url)])
+
+        reply_markup = InlineKeyboardMarkup(inline_buttons) if inline_buttons else None
+
+        chunks = formatter.split_message(text)
+        await status_msg.delete()
+        for idx, chunk in enumerate(chunks):
+            kb = reply_markup if idx == len(chunks) - 1 else None
+            await update.effective_message.reply_text(chunk, reply_markup=kb)
+
+    except Exception as e:
+        logger.error(f"Error in activities_command for user {user_id}: {e}\n{traceback.format_exc()}")
+        await status_msg.edit_text("حدث خطأ أثناء جلب الواجبات والمشاريع من مودل. يرجى المحاولة لاحقاً.")
+
+
+async def activities_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "view_activities":
+        await activities_command(update, context)
 
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -612,8 +720,10 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id in user_sessions:
             user_sessions[user_id]["courses"] = None
             user_sessions[user_id]["transcript"] = None
+            user_sessions[user_id]["activities"] = None
             user_sessions[user_id]["timestamp"] = 0
             user_sessions[user_id]["transcript_time"] = 0
+            user_sessions[user_id]["activities_time"] = 0
 
         profile, sem_name, courses = await get_cached_data(user_id, force_refresh=True)
         if courses is not None:
@@ -629,6 +739,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"لا توجد مساقات مسجلة لفصل ({sem_name}).\n"
                     "تم تجديد كشف العلامات والغيابات مباشرة من خادم زاجل."
                 )
+            await update.effective_message.reply_text("تم تجديد القائمة الرئيسية:", reply_markup=get_main_keyboard(user_id))
         else:
             await msg.edit_text("تعذر تحديث البيانات من زاجل حالياً. يرجى المحاولة لاحقاً.")
     except Exception as e:
@@ -786,9 +897,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = formatter.format_help()
-    if ADMIN_USER_ID > 0 and user_id == ADMIN_USER_ID:
+    if is_tester_or_admin(user_id):
         admin_tools = (
-            "\n\nأوامر المشرف الخاصة (إحصائية فقط):\n"
+            "\n\nأدوات التجربة والإدارة:\n"
+            "/assignments - استعراض المشاريع والواجبات المستحقة من مودل (خاص بالمشرف)\n"
             "/status - تقرير حالة الخادم والعدد الإجمالي للطلاب\n"
             "/broadcast <رسالة> - إرسال إشعار جماعي لكافة الطلاب\n"
             "/clear_cache - تفريغ الذاكرة المؤقتة\n"
@@ -796,7 +908,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/logfile - تحميل ملف السجل كملف مستند"
         )
         text += admin_tools
-    await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text(text, reply_markup=get_main_keyboard(user_id))
 
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -813,6 +925,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await messages_command(update, context)
     elif text == "بوابة مودل Moodle":
         await moodle_command(update, context)
+    elif text in ["الواجبات والمشاريع 📝", "الواجبات والمشاريع", "الواجبات والأنشطة", "الواجبات والأنشطة 📝", "الواجبات", "الواجبات القادمة", "المشاريع والواجبات"]:
+        await activities_command(update, context)
     elif text == "تحديث البيانات":
         await refresh_command(update, context)
     elif text == "تسجيل الخروج":
@@ -850,9 +964,18 @@ def main():
     app.add_handler(CommandHandler("absences", absences_command))
     app.add_handler(CommandHandler("messages", messages_command))
     app.add_handler(CommandHandler("moodle", moodle_command))
+    app.add_handler(CommandHandler("activities", activities_command))
+    app.add_handler(CommandHandler("assignments", activities_command))
+    app.add_handler(CommandHandler("due", activities_command))
+    app.add_handler(CommandHandler("projects", activities_command))
+    app.add_handler(CommandHandler("tasks", activities_command))
+    app.add_handler(CommandHandler("homework", activities_command))
     app.add_handler(CommandHandler("refresh", refresh_command))
     app.add_handler(CommandHandler("logout", logout_command))
     app.add_handler(CommandHandler("help", help_command))
+
+    # Callback query handlers
+    app.add_handler(CallbackQueryHandler(activities_callback, pattern="^view_activities$"))
 
     # Admin Command handlers (Aggregate telemetry and broadcast only)
     app.add_handler(CommandHandler("logs", logs_command))

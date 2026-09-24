@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
-from zajel_client import Course, TimeSlot, StudentProfile, Transcript, get_local_now
+from zajel_client import Course, TimeSlot, StudentProfile, Transcript, UpcomingActivity, get_local_now
 
 
 def split_message(text: str, max_len: int = 3500) -> List[str]:
@@ -175,6 +175,50 @@ def format_messages(messages: List[dict]) -> str:
         if m.get("url"):
             lines.append(f"   رابط الإعلان: {m['url']}")
         lines.append("")
+
+def format_upcoming_activities(student_name: str, activities: List[UpcomingActivity]) -> str:
+    if not activities:
+        return (
+            "الواجبات والمشاريع المستحقة (Moodle)\n\n"
+            f"الطالب: {student_name}\n\n"
+            "لا توجد أي واجبات أو مشاريع مستحقة قادمة حالياً."
+        )
+
+    lines = [
+        f"الواجبات والمشاريع المستحقة القادمة ({len(activities)})\n",
+        f"الطالب: {student_name}\n"
+    ]
+
+    for idx, act in enumerate(activities, 1):
+        if act.component == "mod_assign":
+            if "project" in act.name.lower() or "مشروع" in act.name:
+                type_label = "مشروع (Project)"
+            else:
+                type_label = "واجب (Assignment)"
+        elif act.component == "mod_quiz":
+            type_label = "اختبار قصير (Quiz)"
+        elif act.component == "mod_workshop":
+            type_label = "ورشة عمل / تسليم مرحلي (Workshop)"
+        elif act.component == "mod_vpl":
+            type_label = "مشروع / واجب برمجي (VPL)"
+        elif "turnitin" in act.component:
+            type_label = "بحث / تقرير (Turnitin)"
+        else:
+            type_label = "تسليم مستحق"
+
+        lines.append(f"{idx}. {act.name}")
+        lines.append(f"   المساق: {act.course_name}")
+        lines.append(f"   النوع: {type_label}")
+        if act.formatted_due_date:
+            lines.append(f"   الموعد النهائي: {act.formatted_due_date}")
+        if act.time_remaining_str:
+            lines.append(f"   المتبقي: {act.time_remaining_str}")
+        if act.url:
+            lines.append(f"   الرابط: {act.url}")
+        lines.append("")
+
+    lines.append("تنبيه لتسجيل الدخول السريع:")
+    lines.append("إذا لم تكن مسجلاً في مودل على متصفح هاتفك، اضغط على زر (تسجيل الدخول السريع لمودل) بالأسفل ليتم تسجيل دخولك بنقرة واحدة، ثم افتح رابط الواجب مباشرة.")
 
     return "\n".join(lines).strip()
 

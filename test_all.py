@@ -31,6 +31,8 @@ from zajel_client import (
     SemesterGradeItem,
     SemesterRecord,
     Transcript,
+    UpcomingActivity,
+    format_activity_due_date,
 )
 
 print("=== Running Comprehensive Security, Persistence & Quality Test Suite ===")
@@ -164,6 +166,54 @@ assert len(backups) >= 1, "No verified backups retained!"
 summary_count, summary_latest = db.get_backup_summary()
 assert summary_count >= 1, "Backup summary reported no backups!"
 print(f"Test 10 Passed: Verified backup retention active ({summary_count} snapshots, latest {summary_latest})")
+
+# 11. Moodle Upcoming Activities & Lecture-Filtering Verification
+# 11a. Test date and time remaining formatting
+f_date, rem_str = format_activity_due_date(1791233940) # 2026/10/05
+assert "2026/10/05" in f_date, f"Expected 2026/10/05 in formatted date, got {f_date}"
+assert "متبقي" in rem_str, f"Expected remaining time prefix, got {rem_str}"
+
+# 11b. Test message formatting
+mock_acts = [
+    UpcomingActivity(
+        activity_id=1,
+        name="Assignment #1",
+        activity_name="Assignment #1",
+        course_name="Operating Systems",
+        component="mod_assign",
+        modulename="assign",
+        event_type="due",
+        due_timestamp=1791233940,
+        formatted_due_date=f_date,
+        time_remaining_str=rem_str,
+        url="https://moodle.najah.edu/mod/assign/view.php?id=14312",
+        action_name="Add submission",
+        action_url="https://moodle.najah.edu/mod/assign/view.php?id=14312&action=editsubmission",
+        is_actionable=True
+    )
+]
+act_text = formatter.format_upcoming_activities("طالب تجريبي", mock_acts)
+assert "Operating Systems" in act_text
+assert "Assignment #1" in act_text
+assert "واجب (Assignment)" in act_text
+assert "الرابط:" in act_text
+
+# 11c. Test is_tester_or_admin gating from bot
+import bot
+assert bot.is_tester_or_admin(5474706821) is True
+assert bot.is_tester_or_admin(111222333) is False
+
+# 11d. Live Moodle query verification
+if 'client' in locals():
+    live_activities = client.get_upcoming_activities()
+    print(f"Test 11 Passed: Live Moodle deliverables extracted ({len(live_activities)} assignments/projects):")
+    for a in live_activities:
+        print(f"  - [{a.course_name}] {a.name} (Due: {a.formatted_due_date} | {a.time_remaining_str})")
+        # Ensure zero lecture leaks
+        c_low = a.component.lower()
+        t_low = a.name.lower()
+        assert c_low not in ['mod_zoom', 'mod_bigbluebuttonbn', 'mod_attendance', 'mod_teams', 'mod_collaborate', 'mod_forum'], f"Lecture leaked: {a}"
+        assert 'zoom' not in t_low and 'محاضر' not in t_low and 'جلسة' not in t_low, f"Lecture leaked in title: {a.name}"
 
 shutil.rmtree(_TEST_DIR, ignore_errors=True)
 print("\nALL VERIFICATIONS PASSED SUCCESSFULLY!")

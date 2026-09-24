@@ -92,6 +92,82 @@ class Transcript:
     semesters: List[SemesterRecord] = field(default_factory=list)
 
 
+@dataclass
+class UpcomingActivity:
+    activity_id: int
+    name: str
+    activity_name: str
+    course_name: str
+    component: str
+    modulename: str
+    event_type: str
+    due_timestamp: int
+    formatted_due_date: str
+    time_remaining_str: str
+    url: str
+    action_name: str
+    action_url: str
+    is_actionable: bool
+
+
+ARABIC_WEEKDAYS = {
+    0: "الإثنين",
+    1: "الثلاثاء",
+    2: "الأربعاء",
+    3: "الخميس",
+    4: "الجمعة",
+    5: "السبت",
+    6: "الأحد"
+}
+
+
+def format_activity_due_date(ts: int) -> Tuple[str, str]:
+    """
+    Given a unix timestamp, returns:
+    1. formatted_due_date (e.g. 'الإثنين 2026/10/05 - 11:59 م')
+    2. time_remaining_str (e.g. 'متبقي 11 يوماً' or 'متبقي 4 ساعات')
+    Uses Palestine timezone (Asia/Jerusalem).
+    """
+    if not ts:
+        return "", ""
+    tz_name = os.getenv("TIMEZONE", "Asia/Jerusalem")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone(timedelta(hours=3))
+
+    due_dt = datetime.fromtimestamp(ts, tz)
+    now_dt = get_local_now()
+
+    day_name = ARABIC_WEEKDAYS.get(due_dt.weekday(), "")
+    hour_12 = due_dt.hour % 12
+    if hour_12 == 0:
+        hour_12 = 12
+    period = "م" if due_dt.hour >= 12 else "ص"
+    formatted_date = f"{day_name} {due_dt.strftime('%Y/%m/%d')} - {hour_12:02d}:{due_dt.minute:02d} {period}"
+
+    diff = due_dt - now_dt
+    total_seconds = diff.total_seconds()
+
+    if total_seconds < 0:
+        remaining_str = "انتهى موعد التسليم"
+    elif diff.days > 1:
+        remaining_str = f"متبقي {diff.days} يوماً"
+    elif diff.days == 1:
+        remaining_str = "متبقي يوم واحد"
+    else:
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        if hours > 0:
+            remaining_str = f"متبقي {hours} ساعة و {minutes} دقيقة"
+        elif minutes > 0:
+            remaining_str = f"متبقي {minutes} دقيقة"
+        else:
+            remaining_str = "أقل من دقيقة متبقية"
+
+    return formatted_date, remaining_str
+
+
 DAY_MAP = {
     'احد': 'الأحد',
     'اثنين': 'الإثنين',
@@ -595,3 +671,254 @@ class ZajelClient:
             completed_credits=completed_credits,
             semesters=semesters
         )
+
+    def get_upcoming_activities(self) -> List[UpcomingActivity]:
+        """
+        Scrapes upcoming due activities (assignments, quizzes, project milestones) from Moodle.
+        Strictly ignores all lectures, meetings, and sessions (e.g. mod_zoom, BigBlueButton, attendance).
+        """
+        sso_url = self.get_moodle_sso_url()
+        if not sso_url:
+            return []
+
+        s = requests.Session()
+        s.headers.update({
+            'User-Agent': self.session.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
+            'Origin': 'https://zajeles.najah.edu',
+            'Referer': 'https://zajeles.najah.edu/'
+        })
+
+        try:
+            # Step 1: Request SSO redirect URL
+            resp1 = s.get(sso_url, timeout=15)
+            soup1 = BeautifulSoup(resp1.text, 'html.parser')
+            form1 = soup1.find('form')
+            if not form1:
+                return []
+
+            action = form1.get('action', '')
+            post_url = urljoin('https://moodle.najah.edu', action)
+            form_data = {inp.get('name'): inp.get('value', '') for inp in form1.find_all('input') if inp.get('name')}
+
+            # Step 2: Auto-submit SSO form into Moodle
+            resp2 = s.post(post_url, data=form_data, allow_redirects=True, timeout=15)
+
+            # Step 3: Extract Moodle sesskey
+            m = re.search(r'"sesskey":"([^"]+)"', resp2.text)
+            sesskey = m.group(1) if m else None
+
+            activities: List[UpcomingActivity] = []
+            seen_ids = set()
+
+            def is_lecture(comp: str, mod: str, etype: str, title: str, url: str, purpose: str) -> bool:
+                c_low = (comp or '').lower()
+                m_low = (mod or '').lower()
+                t_low = (title or '').lower()
+                u_low = (url or '').lower()
+                p_low = (purpose or '').lower()
+
+                # 1. Non-deliverable components/modules to drop
+                lecture_comps = {
+                    'mod_zoom', 'mod_bigbluebuttonbn', 'mod_attendance', 'mod_teams',
+                    'mod_collaborate', 'mod_meeting', 'mod_forum', 'mod_chat', 'mod_url',
+                    'mod_resource', 'mod_page', 'mod_folder', 'mod_feedback', 'mod_choice',
+                    'mod_survey', 'mod_lti', 'mod_h5pactivity'
+                }
+                if c_low in lecture_comps or m_low in {
+                    'zoom', 'attendance', 'forum', 'chat', 'url', 'resource', 'page',
+                    'bigbluebuttonbn', 'teams', 'folder', 'feedback', 'choice'
+                }:
+                    return True
+
+                # 2. Meeting domains in URLs
+                meeting_domains = ['zoom.us', 'teams.microsoft.com', 'meet.google.com', 'webex.com']
+                if any(dom in u_low for dom in meeting_domains):
+                    return True
+
+                # 3. Meeting / lecture regex in title, url, or component
+                lecture_patterns = [
+                    r'zoom', r'teams', r'meet', r'webex', r'lecture', r'class', r'session',
+                    r'office\s*hour', r'محاضر[ةه]?', r'جلس[ةه]', r'لقاء', r'شعب[ةه]',
+                    r'حضور', r'غياب', r'ساع[ةه]\s*مكتبي[ةه]', r'تفاعلي', r'تعويضي[ةه]', r'رابط'
+                ]
+                for pat in lecture_patterns:
+                    if re.search(pat, t_low) or re.search(pat, u_low):
+                        return True
+
+                # 4. Purpose check: if explicit purpose given and not assessment, drop
+                if p_low and p_low not in {'assessment'}:
+                    return True
+
+                return False
+
+            def is_deliverable(comp: str, mod: str, title: str, purpose: str) -> bool:
+                c_low = (comp or '').lower()
+                m_low = (mod or '').lower()
+                t_low = (title or '').lower()
+                p_low = (purpose or '').lower()
+
+                # Whitelisted deliverable components
+                deliverable_comps = {
+                    'mod_assign', 'mod_quiz', 'mod_workshop', 'mod_vpl',
+                    'mod_turnitintooltwo', 'mod_turnitintool'
+                }
+                if c_low in deliverable_comps or m_low in {
+                    'assign', 'quiz', 'workshop', 'vpl', 'turnitintooltwo', 'turnitintool'
+                }:
+                    return True
+                if p_low == 'assessment':
+                    return True
+
+                # Explicit deliverable keywords in title
+                deliverable_patterns = [
+                    r'واجب', r'مشروع', r'تسليم', r'تقرير', r'هومورك', r'كويز', r'امتحان', r'اختبار',
+                    r'homework', r'project', r'assignment', r'submission', r'quiz', r'exam', r'report', r'phase'
+                ]
+                for pat in deliverable_patterns:
+                    if re.search(pat, t_low):
+                        return True
+
+                return False
+
+            now_ts = int(time.time())
+
+            # Method A: Query core_calendar_get_action_events_by_timesort (AJAX API)
+            if sesskey:
+                service_url = f"https://moodle.najah.edu/lib/ajax/service.php?sesskey={sesskey}"
+                last_event_id = None
+                max_pages = 10  # Up to 500 events to ensure assignments are never drowned out
+
+                for _ in range(max_pages):
+                    args = {
+                        "timesortfrom": now_ts - 3600,  # Include events due in the past hour as well
+                        "limitnum": 50
+                    }
+                    if last_event_id:
+                        args["aftereventid"] = last_event_id
+
+                    payload = [{
+                        "index": 0,
+                        "methodname": "core_calendar_get_action_events_by_timesort",
+                        "args": args
+                    }]
+
+                    try:
+                        r_svc = s.post(service_url, json=payload, timeout=15)
+                        data_svc = r_svc.json()
+                    except Exception:
+                        break
+
+                    if not data_svc or not isinstance(data_svc, list) or 'data' not in data_svc[0]:
+                        break
+
+                    events_data = data_svc[0]['data']
+                    events = events_data.get('events', [])
+                    if not events:
+                        break
+
+                    for ev in events:
+                        eid = ev.get('id')
+                        if eid in seen_ids:
+                            continue
+                        seen_ids.add(eid)
+
+                        comp = ev.get('component', '')
+                        mod = ev.get('modulename', '')
+                        etype = ev.get('eventtype', '')
+                        name = ev.get('name', '')
+                        act_name = ev.get('activityname') or name
+                        ev_url = ev.get('url', '')
+                        purpose = ev.get('purpose', '')
+
+                        if is_lecture(comp, mod, etype, act_name, ev_url, purpose):
+                            continue
+                        if not is_deliverable(comp, mod, act_name, purpose):
+                            continue
+
+                        clean_name = re.sub(r'\s+is due$', '', act_name, flags=re.IGNORECASE).strip()
+                        course_fullname = ev.get('course', {}).get('fullname', '')
+                        due_ts = ev.get('timesort') or ev.get('timestart', 0)
+
+                        f_date, rem_str = format_activity_due_date(due_ts)
+                        action_dict = ev.get('action') or {}
+
+                        activities.append(UpcomingActivity(
+                            activity_id=eid,
+                            name=clean_name,
+                            activity_name=act_name,
+                            course_name=course_fullname,
+                            component=comp,
+                            modulename=mod,
+                            event_type=etype,
+                            due_timestamp=due_ts,
+                            formatted_due_date=f_date,
+                            time_remaining_str=rem_str,
+                            url=ev_url,
+                            action_name=action_dict.get('name', ''),
+                            action_url=action_dict.get('url', ''),
+                            is_actionable=action_dict.get('actionable', True)
+                        ))
+
+                    last_event_id = events_data.get('lastid')
+                    if not last_event_id or len(events) < 50:
+                        break
+
+            # Method B: Scrape upcoming events page if Method A returned 0 activities
+            if not activities:
+                cal_resp = s.get("https://moodle.najah.edu/calendar/view.php?view=upcoming", timeout=15)
+                cal_soup = BeautifulSoup(cal_resp.text, 'html.parser')
+                event_nodes = cal_soup.select('.event[data-event-id], .eventlist .event')
+                for ev_node in event_nodes:
+                    eid_str = ev_node.get('data-event-id', '0')
+                    eid = int(eid_str) if eid_str.isdigit() else 0
+                    if eid and eid in seen_ids:
+                        continue
+                    seen_ids.add(eid)
+
+                    comp = ev_node.get('data-event-component', '')
+                    etype = ev_node.get('data-event-eventtype', '')
+                    title = ev_node.get('data-event-title') or (ev_node.select_one('.name').get_text(strip=True) if ev_node.select_one('.name') else '')
+
+                    card_link = ev_node.select_one('a.card-link') or ev_node.find('a', href=lambda h: h and 'mod/' in h)
+                    link = card_link.get('href') if card_link else ''
+
+                    if is_lecture(comp, '', etype, title, link, ''):
+                        continue
+                    if not is_deliverable(comp, '', title, ''):
+                        continue
+
+                    course_elem = ev_node.find(lambda tag: tag.name == 'div' and tag.find('i', class_=lambda c: c and 'fa-graduation-cap' in c))
+                    course_name = ""
+                    if course_elem:
+                        col11 = course_elem.find_parent('div', class_='row')
+                        if col11:
+                            course_name = col11.get_text(strip=True).replace('المساق', '').replace('Course', '').strip()
+
+                    date_spans = ev_node.select('span.date')
+                    date_str = " ".join([sp.get_text(strip=True) for sp in date_spans]) if date_spans else ""
+
+                    clean_name = re.sub(r'\s+is due$', '', title, flags=re.IGNORECASE).strip()
+
+                    activities.append(UpcomingActivity(
+                        activity_id=eid,
+                        name=clean_name,
+                        activity_name=title,
+                        course_name=course_name,
+                        component=comp,
+                        modulename='',
+                        event_type=etype,
+                        due_timestamp=0,
+                        formatted_due_date=date_str,
+                        time_remaining_str='',
+                        url=link,
+                        action_name='تسليم / استعراض',
+                        action_url=link,
+                        is_actionable=True
+                    ))
+
+            # Sort by due_timestamp ascending
+            activities.sort(key=lambda a: a.due_timestamp if a.due_timestamp > 0 else 9999999999)
+            return activities
+        except Exception as e:
+            print(f"[ZajelClient] Error querying Moodle activities: {e}")
+            return []
